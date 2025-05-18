@@ -309,3 +309,5 @@ if __name__ == '__main__':
     # _, mse, v_max, t_opt = load_past_experiments()
 
     mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=26)
+
+# python src/experiments/comparative_experiment.py --model_version 89954f3 --model_name simple_sim_gp --model_type gp --fast

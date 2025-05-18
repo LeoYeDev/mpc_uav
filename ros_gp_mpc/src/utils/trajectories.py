@@ -10,7 +10,8 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
-
+import matplotlib
+matplotlib.use('TkAgg')
 
 import numpy as np
 from src.utils.utils import undo_quaternion_flip, rotation_matrix_to_quat

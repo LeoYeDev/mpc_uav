@@ -1,0 +1,12 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/forgany/mpc_ws/devel/lib/python3/dist-packages",
+        "/opt/ros/noetic/lib/python3/dist-packages",
+        "/home/forgany/mpc_ws/src/data_driven_mpc/ros_gp_mpc"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/forgany/mpc_ws/devel/lib/python3/dist-packages",
+        "/opt/ros/noetic/lib/python3/dist-packages",
+        "/home/forgany/mpc_ws/src/data_driven_mpc/ros_gp_mpc"
+    ]
+}

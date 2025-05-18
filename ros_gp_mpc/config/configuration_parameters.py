@@ -33,13 +33,13 @@ class SimpleSimConfig:
 
     # Set to True to show a real-time Matplotlib animation of the experiments for the Simplified Simulator. Execution
     # will be slower if the GUI is turned on. Note: setting to True may require some further library installation work.
-    custom_sim_gui = False
+    custom_sim_gui = True
 
     # Set to True to display a plot describing the trajectory tracking results after the execution.
-    result_plots = False
+    result_plots = True
 
     # Set to True to show the trajectory that will be executed before the execution time
-    pre_run_debug_plots = False
+    pre_run_debug_plots = True
 
     # Choice of disturbances modeled in our Simplified Simulator. For more details about the parameters used refer to
     # the script: src/quad_mpc/quad_3d.py.
@@ -65,6 +65,7 @@ class ModelFitConfig:
         "motor_noise": True
     }
 
+    #ds_name = "gazebo_dataset"
     # ds_metadata = {
     #     "gazebo": "default",
     # }

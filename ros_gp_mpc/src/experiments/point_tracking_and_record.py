@@ -10,7 +10,8 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
-
+import matplotlib
+matplotlib.use('TkAgg')
 
 import os
 import sys
@@ -139,7 +140,7 @@ def main(model_options, recording_options, simulation_options, parameters):
 
     # Real time plot params
     n_forward_props = n_mpc_nodes
-    plot_sim_traj = False
+    plot_sim_traj = True
 
     x_pred = None
     w_opt = None
