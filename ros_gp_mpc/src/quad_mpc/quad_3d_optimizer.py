@@ -123,6 +123,10 @@ class Quad3DOptimizer:
         acados_models, nominal_with_gp = self.acados_setup_model(
             self.quad_xdot_nominal(x=self.x, u=self.u)['x_dot'], model_name)
 
+        # --- ADDED: Store the AcadosModel instances ---
+        self.acados_model_definitions = acados_models # Store the dictionary of AcadosModel objects
+        # --- END ADDED ---
+
         # Convert dynamics variables to functions of the state and input vectors
         self.quad_xdot = {}
         for dyn_model_idx in nominal_with_gp.keys():

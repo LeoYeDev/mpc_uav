@@ -10,7 +10,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
-
+import casadi as cs
 
 import numpy as np
 from src.quad_mpc.quad_3d_optimizer import Quad3DOptimizer
@@ -76,6 +76,10 @@ class Quad3DMPC:
                                         B_x=self.B_x, gp_regressors=self.gp_ensemble,
                                         model_name=model_name, q_mask=q_mask,
                                         solver_options=solver_options, rdrv_d_mat=rdrv_d_mat)
+
+         # --- ADDED: Initialize the cache for CasADi integrators ---
+        self._cached_integrators = {}
+        # --- END ADDED ---
 
     def clear(self):
         self.quad_opt.clear_acados_model()
@@ -210,3 +214,120 @@ class Quad3DMPC:
 
     def reset(self):
         return
+    
+    # --- ADDED: New method for accurate single-step model prediction ---
+    def predict_model_step_accurately(self, current_state_np, control_input_np, integration_period, use_model_idx):
+        if not hasattr(self.quad_opt, 'acados_model_definitions') or \
+           use_model_idx not in self.quad_opt.acados_model_definitions:
+            raise ValueError(f"Invalid use_model_idx: {use_model_idx} or acados_model_definitions not found in Quad3DOptimizer.")
+
+        acados_model_definition = self.quad_opt.acados_model_definitions[use_model_idx]
+
+        # Initialize symbolic variables to None for robust checking
+        sym_x_acados = None
+        sym_u_acados = None
+        sym_p_acados = None
+        ode_expr_acados = None
+        
+        try:
+            sym_x_acados = acados_model_definition.x
+            sym_u_acados = acados_model_definition.u 
+            sym_p_acados = acados_model_definition.p 
+            ode_expr_acados = acados_model_definition.f_expl_expr
+            
+            # --- ADDED: Debug print to check sym_u_acados right after assignment ---
+            # print(f"DEBUG: In predict_model_step_accurately, after assignment:")
+            # print(f"DEBUG: type(sym_u_acados) = {type(sym_u_acados)}")
+            # if hasattr(sym_u_acados, 'shape'):
+            # print(f"DEBUG: sym_u_acados.shape = {sym_u_acados.shape}")
+            # else:
+            # print(f"DEBUG: sym_u_acados has no shape. Value = {sym_u_acados}")
+            # --- END ADDED ---
+
+        except Exception as e_sym_assign_outer:
+            print(f"CRITICAL ERROR during initial symbolic variable assignment: {e_sym_assign_outer}")
+            # If these critical symbols cannot be obtained, re-raise or return current state as fallback
+            raise RuntimeError(f"Failed to assign core symbolic variables from ACADOS model: {e_sym_assign_outer}")
+
+        # Ensure critical symbols were assigned before proceeding
+        if sym_u_acados is None or sym_x_acados is None or ode_expr_acados is None: # sym_p_acados can be empty MX
+            raise RuntimeError("Core symbolic variables (x, u, ode) were not properly assigned from ACADOS model definition.")
+
+
+        integrator_key = (acados_model_definition.name, float(integration_period))
+        if integrator_key in self._cached_integrators:
+            intg = self._cached_integrators[integrator_key]
+        else:
+            integrator_param_inputs = [sym_u_acados] 
+            if isinstance(sym_p_acados, cs.MX) and sym_p_acados.shape[0] > 0:
+                integrator_param_inputs.append(sym_p_acados)
+            
+            sym_ode_params_combined = cs.vertcat(*integrator_param_inputs)
+            dae = {'x': sym_x_acados, 'p': sym_ode_params_combined, 'ode': ode_expr_acados}
+            opts_integrator = {'tf': integration_period, 'simplify': True, 'number_of_finite_elements': 1} 
+            
+            try:
+                unique_integrator_name = f'intg_{acados_model_definition.name}_{str(integration_period).replace(".","p")}_{len(self._cached_integrators)}'
+                intg = cs.integrator(unique_integrator_name, 'rk', dae, opts_integrator)
+                self._cached_integrators[integrator_key] = intg
+            except Exception as e_create_intg: # Renamed exception variable
+                print(f"Error creating CasADi integrator for model {acados_model_definition.name}, period {integration_period}: {e_create_intg}")
+                raise e_create_intg # Re-raise to make it clear
+        
+        x0_numerical = cs.DM(current_state_np)
+        u_numerical = cs.DM(control_input_np)
+        p_acados_numerical_final = cs.DM([]) 
+
+        if isinstance(sym_p_acados, cs.MX) and sym_p_acados.shape[0] > 0:
+            if self.gp_ensemble: # 如果MPC配置了离线GP
+                trigger_val = 1.0
+                # 直接使用 current_state_np 来构造GP的输入参数，
+                # 这与 Quad3DOptimizer.run_optimization 中当 get_gp_state() 返回 None 时的回退行为一致。
+                # 假设 sym_p_acados 的结构是 [gp_state_features (13D), trigger (1D)]
+                # 或者根据您 Quad3DOptimizer 中 self.gp_x 的定义来确定。
+                # 如果 self.gp_x 是完整的13D状态，那么：
+                if sym_p_acados.shape[0] == (current_state_np.shape[0] + 1): # 13 + 1 = 14
+                    p_acados_numerical_list = list(current_state_np) + [trigger_val]
+                    p_acados_numerical_final = cs.DM(p_acados_numerical_list)
+                else:
+                    # 如果 sym_p_acados 的维度不匹配 current_state_np + trigger，说明存在配置问题
+                    # 或者离线GP使用的不是完整的13D状态作为输入（但这部分应由GPEnsemble内部处理特征选择）
+                    # ACADOS参数 p 应该总是对应于GPEnsemble.predict 所需的完整状态 self.gp_x
+                    print(f"CRITICAL WARNING: Dimension mismatch for ACADOS 'p' in predict_model_step_accurately "
+                          f"for model '{acados_model_definition.name}'. Expected {sym_p_acados.shape[0]} "
+                          f"based on symbolic definition, but current_state_np (len {current_state_np.shape[0]}) + trigger "
+                          f"does not match. Supplying zeros for ACADOS 'p'.")
+                    p_acados_numerical_final = cs.DM.zeros(sym_p_acados.shape[0])
+            else: # 没有加载离线GP，但模型仍定义了参数p（不太可能，除非p用于其他目的）
+                print(f"Warning: ACADOS model '{acados_model_definition.name}' has symbolic parameters 'p' "
+                      "but no gp_ensemble is loaded in MPC. Supplying zeros for 'p'.")
+                p_acados_numerical_final = cs.DM.zeros(sym_p_acados.shape[0])
+                
+        integrator_p_combined_numerical_list = [u_numerical]
+        if p_acados_numerical_final.shape[0] > 0: 
+            integrator_p_combined_numerical_list.append(p_acados_numerical_final)
+        integrator_p_combined_numerical = cs.vertcat(*integrator_p_combined_numerical_list)
+        
+        # --- ADDED: Debug print just before the error line ---
+        # print(f"DEBUG: About to calculate expected_integrator_p_size.")
+        # print(f"DEBUG: type(sym_u_acados) for shape access = {type(sym_u_acados)}")
+        # if hasattr(sym_u_acados, 'shape'):
+        # print(f"DEBUG: sym_u_acados.shape for shape access = {sym_u_acados.shape}")
+        # else:
+        # print(f"DEBUG: sym_u_acados has no shape before expected_integrator_p_size. Value = {sym_u_acados}")
+        # --- END ADDED ---
+
+        expected_integrator_p_size = sym_u_acados.shape[0] + \
+                                     (sym_p_acados.shape[0] if isinstance(sym_p_acados, cs.MX) and sym_p_acados.shape[0] > 0 else 0)
+
+        if integrator_p_combined_numerical.shape[0] != expected_integrator_p_size:
+             raise ValueError(f"Integrator param size mismatch for model '{acados_model_definition.name}'. Expected {expected_integrator_p_size}, got {integrator_p_combined_numerical.shape[0]}.")
+
+        try:
+            res = intg(x0=x0_numerical, p=integrator_p_combined_numerical)
+            predicted_state_np = res['xf'].toarray().flatten()
+        except Exception as e_integrate_call: # Renamed exception variable
+            print(f"Error during CasADi integration call for model {acados_model_definition.name}: {e_integrate_call}")
+            predicted_state_np = current_state_np.copy() 
+        return predicted_state_np
+    # --- END ADDED ---

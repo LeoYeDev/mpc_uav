@@ -1,17 +1,3 @@
-""" Executable script to train a custom Gaussian Process on recorded flight data.
-
-This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation, either version 3 of the License, or (at your option) any later
-version.
-This program is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-You should have received a copy of the GNU General Public License along with
-this program. If not, see <http://www.gnu.org/licenses/>.
-"""
-
-
 import os
 import time
 import argparse
@@ -355,7 +341,7 @@ if __name__ == '__main__':
     parser.add_argument("--n_points", type=int, default="20",
                         help="Number of training points used to fit the current GP model.")
 
-    parser.add_argument("--model_name", type=str, default="",
+    parser.add_argument("--model_name", type=str, default="test",
                         help="Name assigned to the trained model.")
 
     parser.add_argument('--x', nargs='+', type=int, default=[7],
@@ -396,3 +382,8 @@ if __name__ == '__main__':
          use_dense=with_dense,
          dense_gp_points=dense_n_points, dense_gp_name=gp_dense_name, dense_gp_version=gp_id_custom,
          visualize_data=Conf.visualize_data, visualize_model=Conf.visualize_training_result)
+
+# python src/model_fitting/gp_fitting.py --n_points 20 --model_name simple_sim_gp --x 7 --y 7
+# python src/model_fitting/gp_fitting.py --n_points 20 --model_name simple_sim_gp --x 8 --y 8
+# python src/model_fitting/gp_fitting.py --n_points 20 --model_name simple_sim_gp --x 9 --y 9
+
