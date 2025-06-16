@@ -37,7 +37,8 @@ from src.model_fitting.gp_online_visualization import visualize_gp_snapshot
 from src.model_fitting.gp_common import world_to_body_velocity_mapping 
 ######
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
-                          t_horizon=1.0, q_diagonal=None, r_diagonal=None, q_mask=None):
+                          t_horizon=1.0, q_diagonal=None, r_diagonal=None, q_mask=None,
+                          use_online_gp=False):
     """
     Creates a Quad3DMPC for the custom simulator.
     @param simulation_options: Parameters for the Quadrotor3D object.
@@ -92,13 +93,13 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
         pre_trained_models = rdrv_d = None
 
     if quad_name is None:
-        quad_name = "my_quad_" + str(globals()['model_num'])
-        globals()['model_num'] += 1
+        quad_name = "my_quad_" + 'sim'
 
     # Initialize quad MPC
     quad_mpc = Quad3DMPC(my_quad, t_horizon=t_horizon, optimization_dt=node_dt, simulation_dt=simulation_dt,
                          q_cost=q_diagonal, r_cost=r_diagonal, n_nodes=n_mpc_nodes,
-                         pre_trained_models=pre_trained_models, model_name=quad_name, q_mask=q_mask, rdrv_d_mat=rdrv_d)
+                         pre_trained_models=pre_trained_models, model_name=quad_name, q_mask=q_mask, rdrv_d_mat=rdrv_d,
+                         use_online_gp=use_online_gp)
 
     return quad_mpc
 
@@ -214,9 +215,24 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
 
         model_ind = quad_mpc.set_reference(x_reference=separate_variables(ref_traj_chunk), u_reference=ref_u_chunk)
 
+        # ========================================================================
+        # 在线GP预测
+        # ========================================================================
+        online_predictions = None
+        if online_gp_manager and any(gp.is_trained_once for gp in online_gp_manager.gps):
+            # 1. 使用上一步MPC规划的轨迹(x_pred)作为对未来状态的近似
+            # 2. 将世界系速度转换为机体坐标系速度
+            planned_states_body = world_to_body_velocity_mapping(x_pred)
+            planned_velocities_body = planned_states_body[:, 7:10]
+            
+            # 3. 调用在线GP进行预测
+            predicted_residuals, _ = online_gp_manager.predict(planned_velocities_body)
+            online_predictions = predicted_residuals
+        # ========================================================================
+
         # Optimize control input to reach pre-set target
         t_opt_init = time.time()
-        w_opt, x_pred = quad_mpc.optimize(use_model=model_ind, return_x=True)
+        w_opt, x_pred = quad_mpc.optimize(use_model=model_ind, return_x=True, online_gp_predictions=online_predictions)
         mean_opt_time += time.time() - t_opt_init
 
         # Select first input (one for each motor) - MPC applies only first optimized input to the plant
@@ -228,7 +244,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
 
         simulation_time = 0.0
         
-        # --- ADDED 
+        # --- ADDED: 在线GP的数据收集
         if collect_online_gp_data_flag and use_gp_ject : 
             s_before_sim  = quad_mpc.get_state()
             v_body_in = s_before_sim .T
@@ -244,7 +260,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
             quad_mpc.simulate(ref_u)
 
 
-        # --- ADDED: Online GP Initialization and History ---
+        # --- ADDED: 在线GP的数据收集与异步更新
         if online_gp_manager : 
             #推演后的状态
             s_after_sim  = quad_mpc.get_state()
@@ -373,70 +389,48 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
 
 
 if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("--model_version", type=str, default="", nargs="+",
-                        help="Versions to load for the regression models. By default it is an 8 digit git hash."
-                             "Must specify the version for each model separated by spaces.")
-
-    parser.add_argument("--model_name", type=str, default="", nargs="+",
-                        help="Name of the regression models within the specified <model_version> folders. "
-                             "Must specify the names for all models separated by spaces.")
-
-    parser.add_argument("--model_type", type=str, default="", nargs="+",
-                        help="Type of regression models (GP or RDRv linear). "
-                             "Must be specified for all models separated by spaces.")
-
-    parser.add_argument("--fast", dest="fast", action="store_true",
-                        help="Set to True to run a fast experiment with less velocity samples.")
-    parser.set_defaults(fast=False)
-
-    input_arguments = parser.parse_args()
-
-    globals()['model_num'] = 0
-
     # Trajectory options
-    # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
-    # traj_type_labels = ["Random", "Circle", "Lemniscate"]
-
-    # if input_arguments.fast:
-    #     av_speed_vec = [[2.0, 3.5],
-    #                     [2.0, 12.0],
-    #                     [2.0, 12.0]]
-    # else:
-    #     av_speed_vec = [[2.0, 2.7, 3.0, 3.2, 3.5],
-    #                     [2.0, 4.5, 7.0, 9.5, 12.0],
-    #                     [2.0, 4.5, 7.0, 9.5, 12.0]]
-
     traj_type_vec = [{"random": 1}]
     traj_type_labels = ["Random"]
     
-    if input_arguments.fast:
-        av_speed_vec = [[3.5],
-                        [12.0],
-                        [12.0]]
+    av_speed_vec = [[3.5],
+                    [12.0],
+                    [12.0]]
+    # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
+    # traj_type_labels = ["Random", "Circle", "Lemniscate"]
 
-    # Model options
-    git_list = input_arguments.model_version
-    name_list = input_arguments.model_name
-    type_list = input_arguments.model_type
+    # av_speed_vec = [[2.0, 3.5],
+    #                 [2.0, 12.0],
+    #                 [2.0, 12.0]]
 
-    assert len(git_list) == len(name_list) == len(type_list)
+    # av_speed_vec = [[2.0, 2.7, 3.0, 3.2, 3.5],
+    #                 [2.0, 4.5, 7.0, 9.5, 12.0],
+    #                 [2.0, 4.5, 7.0, 9.5, 12.0]]
+    git_list = '89954f3'
+    name_list = 'simple_sim_gp'
+    type_list = 'gp'
 
     # Simulation options
     plot_sim = SimpleSimConfig.custom_sim_gui
     noisy_sim_options = SimpleSimConfig.simulation_disturbances
+
+    #加入名义模型和完美模型
     perfect_sim_options = {"payload": False, "drag": False, "noisy": False, "motor_noise": False}
     model_vec = [
         {"simulation_options": perfect_sim_options, "model": None},
         {"simulation_options": noisy_sim_options, "model": None}]
 
     legends = ['perfect', 'nominal']
-    for git, m_name, gp_or_rdrv in zip(git_list, name_list, type_list):
-        model_vec += [{"simulation_options": noisy_sim_options,
-                       "model": {"version": git, "name": m_name, "reg_type": gp_or_rdrv}}]
-        legends += [gp_or_rdrv + ": " + m_name]
+
+    #加入双GP模型
+    model_vec.insert(0,{"simulation_options": noisy_sim_options,
+                       "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}})
+    legends.insert(0, 'DGP')
+
+    #加入单GP模型
+    model_vec += [{"simulation_options": noisy_sim_options,
+                       "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': False}}]
+    legends += ['SGP']
 
     y_label = "RMSE [m]"
 
@@ -449,7 +443,10 @@ if __name__ == '__main__':
 
         if model_type["model"] is not None:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"], **model_type["model"])
-            use_gp_ject = True
+            if model_type["model"]["reg_type"] == "gp":
+                use_gp_ject = model_type["model"].get("use_online_gp", False)
+            else:
+                use_gp_ject = False
         else:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"])
             use_gp_ject = False
@@ -470,9 +467,6 @@ if __name__ == '__main__':
     np.save(err_file, mse)
     np.save(v_file, v_max)
     np.save(t_file, t_opt)
-
-    # from src.utils.visualization import load_past_experiments
-    # _, mse, v_max, t_opt = load_past_experiments()
 
     mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=26)
 

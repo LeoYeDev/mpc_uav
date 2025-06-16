@@ -29,7 +29,8 @@ class Quad3DOptimizer:
     def __init__(self, quad, t_horizon=1, n_nodes=20,
                  q_cost=None, r_cost=None, q_mask=None,
                  B_x=None, gp_regressors=None, rdrv_d_mat=None,
-                 model_name="quad_3d_acados_mpc", solver_options=None):
+                 model_name="quad_3d_acados_mpc", solver_options=None,
+                 use_online_gp=False):
         """
         :param quad: quadrotor object
         :type quad: Quadrotor3D
@@ -104,6 +105,17 @@ class Quad3DOptimizer:
             self.B_z = gp_regressors.B_z
         else:
             self.gp_reg_ensemble = None
+
+        # ========================================================================
+        # 核心修改 1: 在线GP的条件初始化
+        # ========================================================================
+        self.use_online_gp = use_online_gp
+        if self.use_online_gp:
+            # 为在线GP预测的机体坐标系加速度残差定义一个符号变量
+            self.online_gp_residual = cs.MX.sym('online_gp_res', 3)
+        else:
+            self.online_gp_residual = None
+        # ========================================================================
 
         # Declare model variables for GP prediction (only used in real quadrotor flight with EKF estimator).
         # Will be used as initial state for GP prediction as Acados parameters.
@@ -290,6 +302,19 @@ class Quad3DOptimizer:
         acados_models = {}
         dynamics_equations = {}
 
+        # ========================================================================
+        # 核心修改 2: 定义在线GP补偿项（如果启用）
+        # ========================================================================
+        online_gp_dynamics_term = cs.MX.zeros(self.state_dim, 1)
+        if self.use_online_gp:
+            # 将机体坐标系下的在线残差，旋转到世界坐标系
+            online_residual_world = v_dot_q(self.online_gp_residual, self.x[3:7])
+            # 使用与离线GP相同的 B_x 矩阵进行映射，因为目标都是世界系下的速度导数
+            # 注意: 这里我们假设在线GP补偿的是所有三个速度维度，因此B_x应该适用
+            online_gp_dynamics_term = cs.mtimes(self.B_x, online_residual_world)
+        # ========================================================================
+
+
         # Run GP inference if GP's available
         if self.gp_reg_ensemble is not None:
 
@@ -314,9 +339,10 @@ class Quad3DOptimizer:
                 outs = self.add_missing_states(outs)
                 gp_means = v_dot_q(outs["pred"], gp_x[3:7])
                 gp_means = self.remove_extra_states(gp_means)
+                offline_gp_dynamics_term = cs.mtimes(self.B_x, gp_means)
 
-                # Add GP mean prediction
-                dynamics_equations[i] = nominal + cs.mtimes(self.B_x, gp_means)
+                # 将所有补偿项叠加到标称模型上
+                dynamics_equations[i] = nominal + offline_gp_dynamics_term + online_gp_dynamics_term
 
                 x_ = self.x
                 dynamics_ = dynamics_equations[i]
@@ -327,13 +353,22 @@ class Quad3DOptimizer:
 
                 i_name = model_name + "_domain_" + str(i)
 
-                params = cs.vertcat(self.gp_x, self.trigger_var)
+                # ========================================================================
+                # 核心修改 3: 条件式地构建完整的参数向量 p
+                # ========================================================================
+                params_list = [self.gp_x, self.trigger_var]
+                if self.use_online_gp:
+                    params_list.append(self.online_gp_residual)
+                params = cs.vertcat(*params_list)
+                # ========================================================================
+                
+
                 acados_models[i] = fill_in_acados_model(x=x_, u=self.u, p=params, dynamics=dynamics_, name=i_name)
 
         else:
 
             # No available GP so return nominal dynamics
-            dynamics_equations[0] = nominal
+            dynamics_equations[0] = nominal + online_gp_dynamics_term
 
             x_ = self.x
             dynamics_ = nominal
@@ -525,7 +560,7 @@ class Quad3DOptimizer:
         # Call with self.x_with_gp even if use_gp=False
         return discretize_dynamics_and_cost(t_horizon, n, m, self.x, self.u, dynamics, self.L, i)
 
-    def run_optimization(self, initial_state=None, use_model=0, return_x=False, gp_regression_state=None):
+    def run_optimization(self, initial_state=None, use_model=0, return_x=False, gp_regression_state=None, online_gp_predictions=None):
         """
         Optimizes a trajectory to reach the pre-set target state, starting from the input initial state, that minimizes
         the quadratic cost function and respects the constraints of the system
@@ -548,12 +583,31 @@ class Quad3DOptimizer:
         self.acados_ocp_solver[use_model].set(0, 'lbx', x_init)
         self.acados_ocp_solver[use_model].set(0, 'ubx', x_init)
 
-        # Set parameters
-        if self.with_gp:
-            gp_state = gp_regression_state if gp_regression_state is not None else initial_state
-            self.acados_ocp_solver[use_model].set(0, 'p', np.array(gp_state + [1]))
-            for j in range(1, self.N):
-                self.acados_ocp_solver[use_model].set(j, 'p', np.array([0.0] * (len(gp_state) + 1)))
+        # ========================================================================
+        # 核心修改 4: 在运行时设置参数p的数值，包含在线GP的预测值
+        # ========================================================================
+        for j in range(self.N):  # 遍历MPC的N个控制节点
+            p_values = []
+
+            # 1. 添加离线GP参数的数值 (如果存在)
+            if self.with_gp:
+                gp_state = gp_regression_state if gp_regression_state is not None else initial_state
+                trigger_val = 1.0 if j == 0 else 0.0
+                state_for_gp = gp_state if j == 0 else [0.0] * len(initial_state)
+                p_values.extend(state_for_gp)
+                p_values.append(trigger_val)
+            
+            # 2. 添加在线GP参数的数值 (如果启用)
+            if self.use_online_gp:
+                if online_gp_predictions is not None and j < online_gp_predictions.shape[0]:
+                    p_values.extend(online_gp_predictions[j, :])
+                else:
+                    p_values.extend([0.0, 0.0, 0.0]) # 如果没有预测，则补偿为0
+            
+            # 3. 如果p_values不为空，则设置给求解器
+            if p_values:
+                self.acados_ocp_solver[use_model].set(j, 'p', np.array(p_values))
+        # ========================================================================
 
         # Solve OCP
         self.acados_ocp_solver[use_model].solve()
