@@ -329,24 +329,53 @@ def initialize_drone_plotter(world_rad, quad_rad, n_props, full_traj=None):
     # cache the background
     background = fig.canvas.copy_from_bbox(ax.bbox)
 
+    # artists = {
+    #     "trajectory": ax.plot([], [])[0], "drone": ax.plot([], [], 'o-')[0],
+    #     "drone_x": ax.plot([], [], 'o-', color='r')[0],
+    #     "missing_targets": ax.plot([], [], [], color='r', marker='o', linestyle='None', markersize=12)[0],
+    #     "reached_targets": ax.plot([], [], [], color='g', marker='o', linestyle='None', markersize=12)[0],
+    #     "sim_trajectory": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.9 - i * 0.2 / n_props)[0]
+    #                        for i in range(n_props)],
+    #     "int_trajectory": [ax.plot([], [], [], '-', color='tab:orange', alpha=0.9 - i * 0.5 / n_props)[0]
+    #                        for i in range(n_props + 1)],
+    #     "prop_trajectory": [ax.plot([], [], [], '-', color='tab:red', alpha=0.9 - i * 0.2 / n_props)[0]
+    #                         for i in range(n_props)],
+    #     "prop_covariance": [ax.plot([], [], [], color='r', alpha=0.5 - i * 0.45 / n_props)[0]
+    #                         for i in range(n_props)],
+    #     "projection_lines": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0],
+    #                          ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0]],
+    #     "projection_target": [ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0],
+    #                           ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0]]}
+
     artists = {
-        "trajectory": ax.plot([], [])[0], "drone": ax.plot([], [], 'o-')[0],
-        "drone_x": ax.plot([], [], 'o-', color='r')[0],
-        "missing_targets": ax.plot([], [], [], color='r', marker='o', linestyle='None', markersize=12)[0],
-        "reached_targets": ax.plot([], [], [], color='g', marker='o', linestyle='None', markersize=12)[0],
-        "sim_trajectory": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.9 - i * 0.2 / n_props)[0]
+        # 实际轨迹: 使用沉稳的深蓝色，作为画面的基准
+        "trajectory": ax.plot([], [], color='tab:blue', linewidth=2.0)[0], 
+        # 无人机模型:
+        "drone": ax.plot([], [], 'o-', color='orange', linewidth=1.5)[0], # 主体
+        "drone_x": ax.plot([], [], 'o-', color='tab:orange', linewidth=1.5)[0], # 前向电机/机臂
+        # 预先设定轨迹:
+        "sim_trajectory": [ax.plot([], [], [], '-', color='tab:green', alpha=0.9 - i * 0.2 / n_props)[0]
                            for i in range(n_props)],
+        # 中间轨迹: 使用橙色，颜色比实际轨迹更淡
         "int_trajectory": [ax.plot([], [], [], '-', color='tab:orange', alpha=0.9 - i * 0.5 / n_props)[0]
                            for i in range(n_props + 1)],
-        "prop_trajectory": [ax.plot([], [], [], '-', color='tab:red', alpha=0.9 - i * 0.2 / n_props)[0]
+        # 预测轨迹:
+        "prop_trajectory": [ax.plot([], [], [], '-', color='tab:red', alpha=0.9 - i * 0.2 / n_props, linewidth=2.0)[0]
                             for i in range(n_props)],
         "prop_covariance": [ax.plot([], [], [], color='r', alpha=0.5 - i * 0.45 / n_props)[0]
                             for i in range(n_props)],
+        # 目标点:
+        # 未达目标点使用警示性的红色，但色调更柔和
+        "missing_targets": ax.plot([], [], [], color='tab:red', marker='x', linestyle='None', markersize=12)[0],
+        # 已达目标点使用清晰的绿色
+        "reached_targets": ax.plot([], [], [], color='tab:green', marker='o', linestyle='None', markersize=12)[0],
+
         "projection_lines": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0],
                              ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0]],
         "projection_target": [ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0],
-                              ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0]]}
-
+                              ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0]]
+    }
+    
     art_pack = fig, ax, artists, background, world_rad
     return art_pack
 
@@ -404,12 +433,12 @@ def draw_drone_simulation(art_pack, x_trajectory, quad, targets, targets_reached
     ax.draw_artist(trajectories_artist)
 
     # Draw projected trajectory
-    projected_traj_artists[0].set_data(x_trajectory[trajectory_start_pt:, 0], ax.get_ylim()[1])
-    projected_traj_artists[0].set_3d_properties(x_trajectory[trajectory_start_pt:, 2])
-    projected_traj_artists[1].set_data(np.atleast_1d([ax.get_xlim()[0]] * (len(x_trajectory) - trajectory_start_pt)),
-                                       x_trajectory[trajectory_start_pt:, 1])
-    projected_traj_artists[1].set_3d_properties(x_trajectory[trajectory_start_pt:, 2])
-    [ax.draw_artist(projected_traj_artist) for projected_traj_artist in projected_traj_artists]
+    # projected_traj_artists[0].set_data(x_trajectory[trajectory_start_pt:, 0], ax.get_ylim()[1])
+    # projected_traj_artists[0].set_3d_properties(x_trajectory[trajectory_start_pt:, 2])
+    # projected_traj_artists[1].set_data(np.atleast_1d([ax.get_xlim()[0]] * (len(x_trajectory) - trajectory_start_pt)),
+    #                                    x_trajectory[trajectory_start_pt:, 1])
+    # projected_traj_artists[1].set_3d_properties(x_trajectory[trajectory_start_pt:, 2])
+    # [ax.draw_artist(projected_traj_artist) for projected_traj_artist in projected_traj_artists]
 
     # Draw drone art
     drone_art = draw_drone(x_trajectory[-1, 0:3], x_trajectory[-1, 3:7], quad.x_f, quad.y_f)

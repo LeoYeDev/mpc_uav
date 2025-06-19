@@ -58,7 +58,7 @@ def center_and_scale(x, y, z, x_max, x_min, y_max, y_min, z_max, z_min):
     return x, y, z
 
 
-def random_periodical_trajectory(plot=False, random_state=None, map_limits=None):
+def random_periodical_trajectory(plot=False, random_state=38, map_limits=None):
 
     if random_state is None:
         random_state = np.random.randint(0, 9999)
@@ -163,4 +163,6 @@ if __name__ == "__main__":
         "y": [-2, 2],
         "z": [0.1, 2]
     }
-    random_periodical_trajectory(plot=True, map_limits=limits)
+    for i in range(300,400):
+        curve, attitude = random_periodical_trajectory(plot=True, random_state=i, map_limits=limits)
+        print(f"Curve {i}")

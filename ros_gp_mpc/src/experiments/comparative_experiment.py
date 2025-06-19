@@ -139,7 +139,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
     else:
         # Get a random smooth position trajectory
         reference_traj, reference_timestamps, reference_u = random_trajectory(
-            quad=my_quad, discretization_dt=mpc_period, seed=reference_type["random"], speed=av_speed, plot=plot)
+            quad=my_quad, discretization_dt=mpc_period, seed=303, speed=av_speed, plot=plot)
 
     # Set quad initial state equal to the initial reference trajectory state
     quad_current_state = reference_traj[0, :].tolist()
@@ -190,13 +190,13 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
             'num_dimensions': 3,
             'main_process_device': 'cpu',
             'worker_device_str': 'cpu',
-            'buffer_level_capacities': [10, 20, 40], # 三层缓冲区容量
-            'buffer_level_sparsity': [1, 2, 5],      # 稀疏因子：每1/2/5个点存入
+            'buffer_level_capacities': [5, 20, 20], # 三层缓冲区容量
+            'buffer_level_sparsity': [1, 3, 6],      # 稀疏因子：每1/2/5个点存入
             'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
             'min_points_for_ema': 30,                # 启用EMA所需的最小数据点
-            'refit_hyperparams_interval': 30,       # 触发再训练的更新次数间隔
+            'refit_hyperparams_interval': 35,       # 触发再训练的更新次数间隔
             'worker_train_iters': 40,               # 后台训练迭代次数
-            'worker_lr': 0.04,                       # 训练学习率
+            'worker_lr': 0.05,                       # 训练学习率
             'ema_alpha': 0.05,                       # EMA平滑系数
         }
         online_gp_manager = IncrementalGPManager(config=online_gp_config)

@@ -121,7 +121,7 @@ class TrainingHistory:
 def gp_training_worker(
     task_queue: Queue, 
     result_queue: Queue, 
-    stop_event: Event, 
+    stop_event, 
     worker_config: dict, 
     dim_idx: int
 ):
@@ -282,7 +282,7 @@ class IncrementalGP:
         self.is_training_in_progress = False
         self.updates_since_last_train = 0
         if not self.is_trained_once: self.is_trained_once = True
-
+    
 # =================================================================================
 # 5. 管理器：负责编排所有组件
 # =================================================================================
@@ -523,11 +523,11 @@ if __name__ == '__main__':
         'num_dimensions': 3,
         'main_process_device': 'cpu',
         'worker_device_str': 'cpu',
-        'buffer_level_capacities': [10, 20, 40], # 三层缓冲区容量
+        'buffer_level_capacities': [10, 15, 20], # 三层缓冲区容量
         'buffer_level_sparsity': [1, 2, 5],      # 稀疏因子：每1/2/5个点存入
         'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
         'min_points_for_ema': 30,                # 启用EMA所需的最小数据点
-        'refit_hyperparams_interval': 30,       # 触发再训练的更新次数间隔
+        'refit_hyperparams_interval': 20,       # 触发再训练的更新次数间隔
         'worker_train_iters': 70,               # 后台训练迭代次数
         'worker_lr': 0.03,                       # 训练学习率
         'ema_alpha': 0.05,                       # EMA平滑系数
