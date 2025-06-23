@@ -52,8 +52,9 @@ class MultiLevelBuffer:
         if len(level_max_capacities) != len(level_sparsity_factors):
             raise ValueError("Capacities and sparsity factor lists must have the same length.")
         self.num_levels = len(level_max_capacities)
+        self.capacities = level_max_capacities
         # 创建每一层的双端队列作为缓冲区
-        self.levels = [deque(maxlen=cap) for cap in level_max_capacities]
+        self.levels = [deque(maxlen=cap) for cap in self.capacities]
         self.sparsity_factors = level_sparsity_factors
         # 记录总共添加的数据点数量
         self.total_adds = 0
@@ -91,7 +92,14 @@ class MultiLevelBuffer:
             all_data.extend(list(level_deque))
         # 使用字典去重，同时保持数据点的插入顺序
         return list(dict.fromkeys(all_data))
-
+    
+    def reset(self):
+        """清空所有内部缓冲区。"""
+        # *** 核心修复 2: 使用正确的属性名 (self.levels) 和 (self.capacities) ***
+        self.levels = [deque(maxlen=cap) for cap in self.capacities]
+        # *** 核心修复 3: 同时重置数据点计数器，确保完全重置 ***
+        self.total_adds = 0
+        print("  - MultiLevelBuffer has been reset.")
 # =================================================================================
 # 2. 训练历史记录器
 # =================================================================================
@@ -283,6 +291,32 @@ class IncrementalGP:
         self.updates_since_last_train = 0
         if not self.is_trained_once: self.is_trained_once = True
     
+    def reset(self):
+        """将此GP实例完全重置到其初始状态。"""
+        # 1. 重置数据缓冲区
+        self.buffer.reset()
+
+        # 2. 重置所有状态标志
+        self.is_trained_once = False
+        self.is_training_in_progress = False
+        self.updates_since_last_train = 0
+        # 修复: 重置为一个新的空历史对象，而不是None
+        self.last_training_history = TrainingHistory()
+
+        # 3. 重置归一化统计数据 (EMA)
+        self.v_mean_ema = 0.0
+        self.v_var_ema = 1.0
+        self.r_mean_ema = 0.0
+        self.r_var_ema = 1.0
+        # self.ema_counter = 0 # 移除未使用的变量
+
+        # 4. *** 核心修复: 以正确的顺序重新初始化模型和似然 ***
+        #    必须先创建新的likelihood，再用它来创建新的model。
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(self.device)
+        self.model = ExactGPModel(None, None, self.likelihood).to(self.device)
+        
+        print(f"  - IncrementalGP for Dim has been fully reset.")
+
 # =================================================================================
 # 5. 管理器：负责编排所有组件
 # =================================================================================
@@ -374,6 +408,38 @@ class IncrementalGPManager:
                 print(f"[管理器] Worker-{i} 未能正常关闭，将强制终止。")
                 worker.terminate()
         print("[管理器] 所有后台工作进程已成功关闭。")
+    
+    def _clear_queue(self, q):
+        """安全地清空一个多进程队列。"""
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+
+    def reset(self):
+       """
+       重置管理器及其所有内部GP实例的状态，为一次新的独立实验运行做准备。
+       这会清空所有数据缓冲区、重置模型、并清空所有通信队列。
+       """
+       
+       print("\n🔄 Resetting IncrementalGPManager state for new experiment run...")
+       
+       # 1. 委托每个GP实例进行重置 (清空缓冲区, 重置模型和状态)
+       for gp in self.gps:
+           gp.reset()
+           gp.is_trained_once = False
+           
+       # 2. *** 核心修复: 清空所有任务队列和结果队列 ***
+       print("  - Clearing communication queues...")
+       for q in self.task_queues:
+           self._clear_queue(q)
+       self._clear_queue(self.result_queue)
+       
+       # 3. *** 核心修复: 重置性能统计列表 ***
+       self.training_durations = []
+       
+       print("✅ Manager reset complete.") 
 
     def predict(self, query_velocities):
         """使用主进程中的实时模型进行预测。"""
@@ -514,15 +580,15 @@ class IncrementalGPManager:
 if __name__ == '__main__':
     import multiprocessing
     try:
-        multiprocessing.set_start_method("fork", force=True)
+        multiprocessing.set_start_method("spawn", force=True)
     except (RuntimeError, ValueError):
         pass # 在非Linux系统上或特定环境中可能会失败，属于正常情况
 
     # 定义GP管理器和仿真的配置
     final_config = {
         'num_dimensions': 3,
-        'main_process_device': 'cpu',
-        'worker_device_str': 'cpu',
+        'main_process_device': 'cuda',
+        'worker_device_str': 'cuda',
         'buffer_level_capacities': [10, 15, 20], # 三层缓冲区容量
         'buffer_level_sparsity': [1, 2, 5],      # 稀疏因子：每1/2/5个点存入
         'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点

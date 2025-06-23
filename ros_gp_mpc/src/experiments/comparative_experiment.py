@@ -23,6 +23,7 @@ from src.utils.utils import load_pickled_models, interpol_mse, separate_variable
 from src.utils.visualization import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
     get_experiment_files
 from src.utils.visualization import mse_tracking_experiment_plot
+from  src.utils.visual_new import *
 from src.utils.trajectories import random_trajectory, lemniscate_trajectory, loop_trajectory
 from src.model_fitting.rdrv_fitting import load_rdrv
 from src.model_fitting.gp_common import world_to_body_velocity_mapping
@@ -36,6 +37,88 @@ from src.model_fitting.gp_online import IncrementalGPManager
 from src.model_fitting.gp_online_visualization import visualize_gp_snapshot
 from src.model_fitting.gp_common import world_to_body_velocity_mapping 
 ######
+
+# ==============================================================================
+# 1. 定义一个更真实的、基于相对速度的风场模型 (简化版)
+# ==============================================================================
+class RealisticWindModel:
+    """
+    一个更符合物理现实的风场模型，基于多正弦波叠加。
+    它模拟了一个缓慢变化的主风场，并叠加了多个频率和振幅不同的阵风分量。
+    """
+    def __init__(self):
+        """
+        定义风场模型的参数。
+        - base_wind: 定义了缓慢变化的主风。
+        - gusts: 一个列表，定义了多个快速变化的阵风/湍流分量。
+        """
+        wind_vel_params = {
+            # 主风场：低频率，高振幅，代表整体趋势
+            'base_wind': {
+                'amp': np.array([1.2, 1.0, 0.1]),    # 各轴主风速振幅 (m/s)
+                'freq': np.array([0.05, 0.08, 0.1]), # 各轴主风速变化频率 (rad/s) - 非常慢
+                'phase': np.array([0, np.pi/2, np.pi]), # 各轴风速相位
+                'offset': np.array([2.0, 1.0, 0.2])  # 各轴风速偏置 (持续风)
+            },
+            # 阵风/湍流：多个高频率，低振幅的分量
+            'gusts': [
+                {'amp': np.array([0.4, 0.5, 0.1]), 'freq': np.array([1.2, 0.9, 1.5]), 'phase': np.array([0.1, 1.5, 3.0])},
+                {'amp': np.array([0.2, 0.3, 0.05]), 'freq': np.array([2.5, 3.1, 4.0]), 'phase': np.array([0.5, 2.5, 1.0])},
+                {'amp': np.array([0.1, 0.1, 0.02]), 'freq': np.array([5.0, 6.2, 7.5]), 'phase': np.array([0.8, 4.0, 5.5])},
+            ]
+        }
+        self.params = wind_vel_params
+        print(f"💨 [高级风场] 多正弦波叠加风场模型已初始化。")
+        print(f"    - 主风偏置 (Offset): {self.params['base_wind']['offset']} m/s")
+        print(f"    - 主风振幅 (Base Amp): {self.params['base_wind']['amp']} m/s")
+        print(f"    - 主风频率 (Base Freq): {self.params['base_wind']['freq']} rad/s")
+        print(f"    - 阵风分量数量: {len(self.params['gusts'])}")
+
+    def get_wind_velocity(self, t):
+        """根据时间 t 获取世界坐标系下的总风速向量。"""
+        p = self.params
+        
+        # 1. 计算缓慢变化的主风场
+        base = p['base_wind']
+        wind_velocity = base['offset'] + base['amp'] * np.sin(base['freq'] * t + base['phase'])
+        
+        # 2. 叠加所有阵风/湍流分量
+        for gust in p['gusts']:
+            wind_velocity += gust['amp'] * np.sin(gust['freq'] * t + gust['phase'])
+            
+        return wind_velocity
+
+    def visualize(self, duration=20):
+        """可视化风速模型在一段时间内的函数图像，将三轴风速绘制在同一张图中。"""
+        print("正在生成风速模型的可视化图表...")
+        t_span = np.linspace(0, duration, 500)
+        wind_velocities = np.array([self.get_wind_velocity(t) for t in t_span])
+
+        try:
+            plt.style.use('seaborn-v0_8-whitegrid')
+        except Exception:
+            plt.style.use('default')
+
+        # --- 修改: 创建一个子图而不是三个 ---
+        fig, ax = plt.subplots(1, 1, figsize=(14, 7), dpi=120)
+        ax.set_title('Realistic Wind Velocity Model', fontsize=18, weight='bold')
+        
+        axis_labels, colors = ['X-axis', 'Y-axis', 'Z-axis'], ['#c0392b', '#2980b9', '#27ae60']
+
+        # --- 修改: 在同一个图(ax)上绘制三条曲线 ---
+        for i in range(3):
+            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=2.5, label=f'Wind Velocity on {axis_labels[i]}')
+
+        # --- 修改: 为单个图表设置标签、图例和网格 ---
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Velocity (m/s)')
+        ax.legend(loc='upper right')
+        ax.grid(True, which='both', linestyle=':', linewidth=0.6)
+        ax.axhline(0, color='black', lw=0.8, linestyle='--', alpha=0.7)
+
+        plt.tight_layout()
+        plt.show()
+    
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
                           t_horizon=1.0, q_diagonal=None, r_diagonal=None, q_mask=None,
                           use_online_gp=False):
@@ -104,7 +187,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
     return quad_mpc
 
 
-def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
+def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=False, 
+         use_wind=False, use_gp_ject=False, model_type_perfect=False, online_gp_manager=None):
     """
 
     :param quad_mpc:
@@ -124,6 +208,11 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
     reference_over_sampling = 5
     mpc_period = t_horizon / (n_mpc_nodes * reference_over_sampling)
     #预测时长1s，一周期内点数为10，启用mpc周期0.02s
+
+    wind_model = None
+    use_wind = True
+    if use_wind: # 假设我们稍后会添加这个命令行参数
+        wind_model = RealisticWindModel()
 
     # Choose the reference trajectory:
     if reference_type == "loop":
@@ -177,29 +266,16 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
     history_gp_target_residuals = [] 
     history_timestamps_for_gp = []  # 记录时间戳
     collect_online_gp_data_flag = True  # Set to True to enable online GP data collection
-    # use_gp_ject = True
-    online_gp_manager = None  # Initialize as None, will be set if collect_online_gp_data_flag is True
+    # use_online_gp_ject = True
+    out_online_gp_manager = None  # 用于快照可视化的在线GP管理器
     visualized_all = False
 
-    if collect_online_gp_data_flag and use_gp_ject: 
+    if collect_online_gp_data_flag and use_online_gp_ject: 
         print("\n" + "="*50)
-        print("在线GP模块已激活：正在初始化并进行预热...")
+        print("在线GP模块已激活")
         print("="*50)
         # 使用我们最终确定的、更稳健的配置
-        online_gp_config = {
-            'num_dimensions': 3,
-            'main_process_device': 'cpu',
-            'worker_device_str': 'cpu',
-            'buffer_level_capacities': [5, 20, 20], # 三层缓冲区容量
-            'buffer_level_sparsity': [1, 3, 6],      # 稀疏因子：每1/2/5个点存入
-            'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
-            'min_points_for_ema': 30,                # 启用EMA所需的最小数据点
-            'refit_hyperparams_interval': 35,       # 触发再训练的更新次数间隔
-            'worker_train_iters': 40,               # 后台训练迭代次数
-            'worker_lr': 0.05,                       # 训练学习率
-            'ema_alpha': 0.05,                       # EMA平滑系数
-        }
-        online_gp_manager = IncrementalGPManager(config=online_gp_config)
+        
 
     while (time.time() - start_time) < max_simulation_time and current_idx < reference_traj.shape[0]:
 
@@ -245,7 +321,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
         simulation_time = 0.0
         
         # --- ADDED: 在线GP的数据收集
-        if collect_online_gp_data_flag and use_gp_ject : 
+        if collect_online_gp_data_flag and use_online_gp_ject : 
             s_before_sim  = quad_mpc.get_state()
             v_body_in = s_before_sim .T
             v_body_in = world_to_body_velocity_mapping(v_body_in)
@@ -253,11 +329,18 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
             history_gp_input_velocities.append(v_body_in.copy())
         # --- END ADDED:
 
+        # --- 核心修改：基于无人机完整状态计算风力 ---
+        ext_v_k = None
+        if use_wind is not None:
+            # 直接将当前13维状态向量传入
+            ext_v_k = wind_model.get_wind_velocity(total_sim_time)
+        # ---------------------------------------------
+
         # ##### Simulation runtime (inner loop) ##### #
         while simulation_time < mpc_period:
             simulation_time += simulation_dt
             total_sim_time += simulation_dt
-            quad_mpc.simulate(ref_u)
+            quad_mpc.simulate(ref_u, external_v=ext_v_k)
 
 
         # --- ADDED: 在线GP的数据收集与异步更新
@@ -303,30 +386,22 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
             online_gp_manager.poll_for_results()
 
             mean_opt_time += time.time() - update_start_time
-            print(f"在线GP更新耗时: {time.time() - update_start_time:.4f}s")
+            #print(f"在线GP更新耗时: {time.time() - update_start_time:.4f}s")
 
             # --- 在初始优化后可视化GP拟合情况 (一次) ---
-            if total_sim_time > 5.0 and not snapshot_visualization_done:
+            if total_sim_time >= 9.0 and not snapshot_visualization_done:
                 # 检查是否有任何一个GP维度已经训练过了
                 if any(gp.is_trained_once for gp in online_gp_manager.gps):
                     print(f"\n📸 [快照] 仿真时间 {total_sim_time:.2f}s, 生成当前GP回归效果快照...")
-                    visualize_gp_snapshot(
-                        online_gp_manager=online_gp_manager,
-                        # 使用当前的MPC预测轨迹来定义绘图的X轴范围
-                        mpc_planned_states=x_pred, 
-                        snapshot_info_str=f"In-Flight Snapshot @ SimTime {total_sim_time:.2f}s"
-                    )
-                online_gp_manager.visualize_training_history()
+                    out_online_gp_manager = online_gp_manager
+                    out_x_pred = x_pred
+                    out_total_sim_time = total_sim_time
                 snapshot_visualization_done = True
             # --- 初始优化后可视化结束 ---
         # --- END ADDED: Online GP Initialization ---
 
-
         u_optimized_seq[current_idx, :] = np.reshape(ref_u, (1, -1))
         current_idx += 1   
-
-    if online_gp_manager:
-            online_gp_manager.shutdown()
 
     quad_current_state = my_quad.get_state(quaternion=True, stacked=True)
     quad_trajectory[-1, :] = np.expand_dims(quad_current_state, axis=0)
@@ -338,8 +413,18 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
     rmse = interpol_mse(reference_timestamps, reference_traj[:, :3], reference_timestamps, quad_trajectory[:, :3])
     max_vel = np.max(np.sqrt(np.sum(reference_traj[:, 7:10] ** 2, 1)))
 
-    with_gp = ' + GP ' if quad_mpc.gp_ensemble is not None else ' - GP '
-    title = r'$v_{max}$=%.2f m/s | RMSE: %.4f m | %s ' % (max_vel, float(rmse), with_gp)
+    #title = r'$v_{max}$=%.2f m/s | RMSE: %.4f m | %s ' % (max_vel, float(rmse), legends)
+    #如果使用DGP
+    if online_gp_manager and use_online_gp_ject:
+        title = f'DGP-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
+    #如果使用SGP
+    elif use_gp_ject is True:
+        title = f'SGP-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
+    #如果没有GP
+    elif model_type_perfect:
+        title = f'Perfect   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
+    else:
+        title = f'Nominal   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
 
     print(f'\n--- Simulation finished ---\n')
     print(f'Average optimization time: {mean_opt_time:.4f} s')
@@ -347,9 +432,23 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
     print(f'Maximum velocity: {max_vel:.2f} m/s')
 
     if plot:
-        trajectory_tracking_results(reference_timestamps, reference_traj, quad_trajectory,
-                                    reference_u, u_optimized_seq, title)
+        if wind_model is not None:
+            wind_model.visualize() # 在仿真开始前调用可视化
+        
+        if out_online_gp_manager is not None:
+            visualize_gp_snapshot(
+                online_gp_manager=out_online_gp_manager,
+                # 使用当前的MPC预测轨迹来定义绘图的X轴范围
+                mpc_planned_states=out_x_pred, 
+                snapshot_info_str=f"In-Flight Snapshot @ SimTime {out_total_sim_time:.2f}s"
+            )
+            out_online_gp_manager.visualize_training_history()
+        
+        # trajectory_tracking_results(reference_timestamps, reference_traj, quad_trajectory,
+        #                             reference_u, u_optimized_seq, title)
 
+        tracking_results(reference_timestamps, reference_traj, quad_trajectory,
+                                    reference_u, u_optimized_seq, title)
     # --- 新增：绘制在线GP结果 ---
     if online_gp_manager and history_gp_input_velocities and history_gp_target_residuals and visualized_all:
         print("\n--- Plotting Online GP Collected Data: Input Velocity vs. Target Residual ---")
@@ -385,15 +484,26 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_gp_ject=False):
         fig_scatter.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.show() # 将show调用移到main函数末尾，以显示所有图
     # --- 在线GP绘图结束 ---
-    return rmse, max_vel, mean_opt_time
+    # --- 修改 1: 增加函数返回值，用于后续保存 ---
+    return rmse, max_vel, mean_opt_time, reference_timestamps, reference_traj, quad_trajectory
+    # --- 修改结束 ---
 
 
 if __name__ == '__main__':
+    # --- 核心修复: 添加CUDA安全的多进程启动方法 ---
+    # 必须在任何其他多进程或CUDA操作之前调用
+    import multiprocessing
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        # 如果上下文已经设置，可能会抛出此异常，属于正常情况
+        pass
+    # --- 修复结束 ---
     # Trajectory options
     traj_type_vec = [{"random": 1}]
     traj_type_labels = ["Random"]
     
-    av_speed_vec = [[3.5],
+    av_speed_vec = [[2.5],
                     [12.0],
                     [12.0]]
     # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
@@ -413,42 +523,62 @@ if __name__ == '__main__':
     # Simulation options
     plot_sim = SimpleSimConfig.custom_sim_gui
     noisy_sim_options = SimpleSimConfig.simulation_disturbances
+    
+    #加入双GP模型
+    model_vec = [{"simulation_options": noisy_sim_options,
+                       "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}}]
+    legends = ['DGP']
 
     #加入名义模型和完美模型
-    perfect_sim_options = {"payload": False, "drag": False, "noisy": False, "motor_noise": False}
-    model_vec = [
-        {"simulation_options": perfect_sim_options, "model": None},
-        {"simulation_options": noisy_sim_options, "model": None}]
+    model_vec += [{"simulation_options": noisy_sim_options, "model": None}]
+    legends += ['nominal']
 
-    legends = ['perfect', 'nominal']
-
-    #加入双GP模型
-    model_vec.insert(0,{"simulation_options": noisy_sim_options,
-                       "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}})
-    legends.insert(0, 'DGP')
+    # --- 修改 2: 准备用于在内存中保存绘图数据的变量 ---
+    all_results_data = {} # 使用字典在内存中存储每个控制器的最终绘图数据
+    # --- 修改结束 ---
 
     #加入单GP模型
     model_vec += [{"simulation_options": noisy_sim_options,
                        "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': False}}]
     legends += ['SGP']
-
+    
     y_label = "RMSE [m]"
-
     # Define result vectors
     mse = np.zeros((len(traj_type_vec), len(av_speed_vec[0]), len(model_vec)))
     v_max = np.zeros((len(traj_type_vec), len(av_speed_vec[0])))
     t_opt = np.zeros((len(traj_type_vec), len(av_speed_vec[0]), len(model_vec)))
 
     for n_train_id, model_type in enumerate(model_vec):
-
+        # --- 核心修改 1: 在此处准备在线GP管理器 ---
+        online_gp_manager = None
+        use_online_gp_ject = False
+        if model_type["model"] and model_type["model"].get("use_online_gp", False):
+            use_online_gp_ject = True
+            print("\n" + "="*50)
+            print(f"为模型初始化在线GP管理器...")
+            print("="*50)
+            online_gp_config = {
+            'num_dimensions': 3,
+            'main_process_device': 'cuda',
+            'worker_device_str': 'cuda',
+            'buffer_level_capacities': [5, 25, 20], # 三层缓冲区容量
+            'buffer_level_sparsity': [1, 3, 5],      # 稀疏因子：每1/2/5个点存入
+            'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
+            'min_points_for_ema': 30,                # 启用EMA所需的最小数据点
+            'refit_hyperparams_interval': 25,       # 触发再训练的更新次数间隔
+            'worker_train_iters': 30,               # 后台训练迭代次数
+            'worker_lr': 0.05,                       # 训练学习率
+            'ema_alpha': 0.05,                       # EMA平滑系数
+            }
+            online_gp_manager = IncrementalGPManager(config=online_gp_config)
+        # --- 修改结束 ---
         if model_type["model"] is not None:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"], **model_type["model"])
-            if model_type["model"]["reg_type"] == "gp":
-                use_gp_ject = model_type["model"].get("use_online_gp", False)
-            else:
-                use_gp_ject = False
+            model_type_perfect = False
+            use_gp_ject = True
         else:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"])
+            model_type_perfect = not model_type["simulation_options"]["noisy"]
             use_gp_ject = False
 
         for traj_id, traj_type in enumerate(traj_type_vec):
@@ -457,17 +587,64 @@ if __name__ == '__main__':
 
                 traj_params = {"av_speed": speed, "reference_type": traj_type, "plot": plot_sim}
 
-                mse[traj_id, v_id, n_train_id], traj_v, opt_dt = main(custom_mpc, **traj_params, use_gp_ject=use_gp_ject)
+                # --- 核心修改：在每次新的速度测试开始时，重置GP管理器的状态 ---
+                if online_gp_manager:
+                    online_gp_manager.reset()
+                # --- 修改结束 --
+                (mse[traj_id, v_id, n_train_id], traj_v, opt_dt,
+                 t_ref, x_ref, x_executed) = main(custom_mpc, **traj_params, use_online_gp_ject=use_online_gp_ject,
+                                     use_gp_ject=use_gp_ject, model_type_perfect = model_type_perfect,
+                                     online_gp_manager=online_gp_manager)
+                
                 t_opt[traj_id, v_id, n_train_id] += opt_dt
-
                 if v_max[traj_id, v_id] == 0:
                     v_max[traj_id, v_id] = traj_v
+
+                # --- 修改 4: 将当前运行的结果存储在内存变量中 ---
+                # 我们只保存最后一次速度测试的结果作为绘图代表
+                if v_id == len(av_speed_vec[traj_id]) - 1:
+                    controller_name = legends[n_train_id]
+                    # 将数据存储在一个字典中
+                    result_data = {
+                        't_ref': t_ref,
+                        'x_ref': x_ref,
+                        'x_executed': x_executed,
+                    }
+                    all_results_data[controller_name] = result_data
+                    print(f"💾 结果已为控制器 '{controller_name}' 存储在内存中。")
+                # --- 修改结束 ---
+        # --- 核心修改 3: 在模型的所有速度测试结束后，再关闭管理器 ---
+        if online_gp_manager:
+            print(f"\n模型 '{legends[n_train_id]}' 的所有速度测试完成，正在关闭在线GP管理器...")
+            online_gp_manager.shutdown()
+            print("-" * 50)
 
     _, err_file, v_file, t_file = get_experiment_files()
     np.save(err_file, mse)
     np.save(v_file, v_max)
     np.save(t_file, t_opt)
+    
+    # --- 修改 6: 在所有实验结束后，调用新的对比绘图函数 ---
+    print("\n" + "="*60)
+    print("所有仿真已完成，正在生成最终的论文级跟踪误差对比图...")
+    print("="*60)
 
+    # 定义每个控制器的绘图样式
+    controller_plot_map = {
+        'DGP': {'color': '#9b59b6', 'linestyle': '-', 'linewidth': 1.7, 'label': 'DGP-MPC', 'fill_alpha': 0.25, 'zorder': 4},
+        'SGP': {'color': '#f1c40f', 'linestyle': '-', 'linewidth': 1.7, 'label': 'SGP-MPC', 'fill_alpha': 0.05, 'zorder': 3},
+        'nominal': {'color': '#3498db', 'linestyle': '-', 'linewidth': 1.7, 'label': 'Nominal MPC', 'fill_alpha': 0.15, 'zorder': 1},
+        'perfect': {'color': '#2ecc71', 'linestyle': '--', 'linewidth': 1.7, 'label': 'Perfect Model', 'fill_alpha': 0,'zorder': 2},
+    }
+    
+    # 调用新的绘图函数，传入内存中的数据字典
+    plot_tracking_error_comparison(
+        results_data=all_results_data,
+        controller_map=controller_plot_map,
+        title="Controller Tracking Error Comparison"
+    )
+    # --- 修改结束 ---
+    
     mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=26)
 
 # python src/experiments/comparative_experiment.py --model_version 89954f3 --model_name simple_sim_gp --model_type gp --fast

@@ -130,7 +130,7 @@ class Quad3DMPC:
                                                  gp_regression_state=quad_gp_state,online_gp_predictions=online_gp_predictions)
         return out_out
 
-    def simulate(self, ref_u):
+    def simulate(self, ref_u, external_v=None):
         """
         Runs the simulation step for the dynamics model of the quadrotor 3D.
 
@@ -138,7 +138,7 @@ class Quad3DMPC:
         """
 
         # Simulate step
-        self.quad.update(ref_u, self.simulation_dt)
+        self.quad.update(ref_u, self.simulation_dt, external_v=external_v)
 
     def simulate_plant(self, w_opt, t_horizon=None, dt_vec=None, progress_bar=False):
         """

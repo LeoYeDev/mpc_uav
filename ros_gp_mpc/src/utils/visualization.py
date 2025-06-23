@@ -595,9 +595,9 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
                 mse_data = mse[seed_id, :, i, j] if len(mse.shape) == 4 else mse[seed_id, :, i]
                 label = legends[i] if seed_id == 0 and j == 0 else None
                 if legends[i] == 'perfect':
-                    axes[j, seed_id].plot(v_max[seed_id, :], mse_data, '--o', linewidth=4, label=label)
+                    axes[j, seed_id].plot(v_max[seed_id, :], mse_data, '--o', linewidth=4, label=label, markersize=8)
                 else:
-                    axes[j, seed_id].plot(v_max[seed_id, :], mse_data, '--o', label=label)
+                    axes[j, seed_id].plot(v_max[seed_id, :], mse_data, '--o', label=label, markersize=8)
             if seed_id == 0:
                 axes[j, seed_id].set_ylabel(y_labels[j], size=font_size)
             if j == 0:
@@ -627,6 +627,10 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     if t_opt is None:
         return
 
+    # --- 核心修改 2: 在有t_opt时，显示RMSE图 (非阻塞) ---
+    # 使用 block=False 可以在显示第一个图后继续执行代码
+    plt.show(block=False)
+
     v = v_max.reshape(-1)
     ind_v = np.argsort(v, axis=0)
 
@@ -643,6 +647,8 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
                 transparent=False, bbox_inches=None, pad_inches=0.1,
                 frameon=None, metadata=None)
 
+    # --- 核心修改 3: 显示MPC优化时间图 ---
+    plt.show()
 
 def load_past_experiments():
 

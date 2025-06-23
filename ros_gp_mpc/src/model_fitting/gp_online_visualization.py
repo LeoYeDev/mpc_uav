@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import gpytorch
-
+from src.utils.visual_set import set_publication_style
 # 假设项目的根目录 'src' 已经被添加到了 PYTHONPATH
 # 注意: 如果 gp_common 模块无法找到，请确保正确设置了 PYTHONPATH
 try:
@@ -42,19 +42,7 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
     mpc_plan_means, mpc_plan_vars = online_gp_manager.predict(future_velocities_np)
 
     # --- 2. 图表风格设定：注入专业学术感 ---
-    try:
-        plt.style.use('seaborn-v0_8-whitegrid')
-    except IOError:
-        plt.style.use('default')
-
-    try:
-        plt.rcParams.update({
-            "font.family": "serif",
-            "font.serif": ["Times New Roman"],
-            "font.size": 14, # 稍微增大基础字号，提高可读性
-        })
-    except Exception as e:
-        print(f"⚠️ [可视化] 设置字体失败: {e}。将使用默认字体。")
+    set_publication_style(font_size=16)  # 设置专业的出版物风格
 
     num_dims = online_gp_manager.num_dimensions
     fig, axes = plt.subplots(num_dims, 1, figsize=(12, 5 * num_dims), squeeze=False, dpi=150)

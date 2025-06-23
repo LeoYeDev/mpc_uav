@@ -172,7 +172,7 @@ class Quadrotor3D:
         else:
             return self.u
 
-    def update(self, u, dt):
+    def update(self, u, dt, external_v=None):
         """
         Runge-Kutta 4th order dynamics integration
 
@@ -200,8 +200,24 @@ class Quadrotor3D:
         else:
             f_d = np.zeros((3, 1))
             t_d = np.zeros((3, 1))
-
         x = self.get_state(quaternion=True, stacked=False)
+        
+        # ==============================================================================
+        # 核心修改：在这里决定扰动力 f_d 的来源
+        # ==============================================================================
+        if external_v is not None:
+            # Transform velocity to body frame
+            v_out = v_dot_q(x[2], quaternion_inverse(x[1]))[:, np.newaxis]
+            v_out -= v_dot_q(external_v, quaternion_inverse(x[1]))[:, np.newaxis]
+            # Compute aerodynamic drag acceleration in world frame
+            a_drag = -self.aero_drag * v_out ** 2 * np.sign(v_out) / self.mass
+            # Add rotor drag
+            a_drag -= self.rotor_drag * v_out / self.mass
+
+            # 将转换后的机体坐标系下的风力，叠加到原有的扰动力 f_d 上
+            f_d += a_drag.reshape(3, 1)
+            #t_d += np.zeros((3, 1)) # 假设风不产生额外的扭矩扰动
+        # ==============================================================================
 
         # RK4 integration
         k1 = [self.f_pos(x), self.f_att(x), self.f_vel(x, self.u, f_d), self.f_rate(x, self.u, t_d)]
