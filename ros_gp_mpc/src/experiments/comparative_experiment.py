@@ -53,70 +53,88 @@ class RealisticWindModel:
         - gusts: 一个列表，定义了多个快速变化的阵风/湍流分量。
         """
         wind_vel_params = {
-            # 主风场：低频率，高振幅，代表整体趋势
+            # 新增：风速随时间线性增长的斜率
+            'ramp_slope': np.array([0.1, 0.1, 0.01]), # 各轴风速每秒增加量 (m/s^2)
+
+            # 主风场：振幅减小，代表更平稳的整体趋势
             'base_wind': {
-                'amp': np.array([1.2, 1.0, 0.1]),    # 各轴主风速振幅 (m/s)
-                'freq': np.array([0.05, 0.08, 0.1]), # 各轴主风速变化频率 (rad/s) - 非常慢
+                'amp': np.array([0.2, 0.2, 0.05]),    # 各轴主风速振幅 (m/s) - 减小
+                'freq': np.array([0.04, 0.03, 0.1]), # 各轴主风速变化频率 (rad/s) - 保持慢速
                 'phase': np.array([0, np.pi/2, np.pi]), # 各轴风速相位
-                'offset': np.array([2.0, 1.0, 0.2])  # 各轴风速偏置 (持续风)
+                'offset': np.array([1.5, 2.5, 0.2])  # 各轴风速初始偏置 (m/s) - 减小
             },
-            # 阵风/湍流：多个高频率，低振幅的分量
+            # 阵风/湍流：振幅减小，数量减少，代表更小的波动
             'gusts': [
-                {'amp': np.array([0.4, 0.5, 0.1]), 'freq': np.array([1.2, 0.9, 1.5]), 'phase': np.array([0.1, 1.5, 3.0])},
-                {'amp': np.array([0.2, 0.3, 0.05]), 'freq': np.array([2.5, 3.1, 4.0]), 'phase': np.array([0.5, 2.5, 1.0])},
-                {'amp': np.array([0.1, 0.1, 0.02]), 'freq': np.array([5.0, 6.2, 7.5]), 'phase': np.array([0.8, 4.0, 5.5])},
+                {'amp': np.array([0.05, 0.05, 0.05]), 'freq': np.array([2.2, 2.9, 1.5]), 'phase': np.array([0.1, 1.5, 3.0])}, # 振幅减小
+                {'amp': np.array([0.1, 0.15, 0.02]), 'freq': np.array([3.5, 3.1, 4.0]), 'phase': np.array([0.5, 2.5, 1.0])}, # 振幅减小
+                # 移除了最高频的阵风分量以减少整体波动
             ]
         }
         self.params = wind_vel_params
         print(f"💨 [高级风场] 多正弦波叠加风场模型已初始化。")
-        print(f"    - 主风偏置 (Offset): {self.params['base_wind']['offset']} m/s")
+        print(f"    - 初始偏置 (Offset): {self.params['base_wind']['offset']} m/s")
+        print(f"    - 增长斜率 (Ramp Slope): {self.params.get('ramp_slope', np.zeros(3))} m/s²")
         print(f"    - 主风振幅 (Base Amp): {self.params['base_wind']['amp']} m/s")
         print(f"    - 主风频率 (Base Freq): {self.params['base_wind']['freq']} rad/s")
         print(f"    - 阵风分量数量: {len(self.params['gusts'])}")
 
     def get_wind_velocity(self, t):
         """根据时间 t 获取世界坐标系下的总风速向量。"""
-        p = self.params
+        # p = self.params
         
-        # 1. 计算缓慢变化的主风场
-        base = p['base_wind']
-        wind_velocity = base['offset'] + base['amp'] * np.sin(base['freq'] * t + base['phase'])
+        # # 1. 计算缓慢变化的主风场，并加入线性增长项
+        # base = p['base_wind']
+        # ramp_effect = p.get('ramp_slope', np.zeros(3)) * t
+        # wind_velocity = base['offset'] + ramp_effect + base['amp'] * np.sin(base['freq'] * t + base['phase'])
         
-        # 2. 叠加所有阵风/湍流分量
-        for gust in p['gusts']:
-            wind_velocity += gust['amp'] * np.sin(gust['freq'] * t + gust['phase'])
+        # # 2. 叠加所有阵风/湍流分量
+        # for gust in p['gusts']:
+        #     wind_velocity += gust['amp'] * np.sin(gust['freq'] * t + gust['phase'])
+
+        # X轴风速: f(t) = 1.3 * arctan(t - 4) + 1.8 + 0.2 * sin(0.7 * t)
+        wind_x = 1.3 * np.arctan(t - 4) + 2.0 + 0.2 * np.sin(0.7 * t)
+        
+        # Y轴风速: g(t) = -1.0 * arctan(t - 9) - 0.5 + 0.2 * sin(0.5 * t)
+        wind_y = -1.0 * np.arctan(t - 9) - 0.5 + 0.2 * np.sin(0.5 * t)
+        
+        # Z轴风速 (未指定，设为0)
+        wind_z = 0.6 + 0.05 * np.sin(0.1 * t) + 0.05 * np.sin(1.5 * t) + 0.02 * np.sin(4.0 * t)
             
-        return wind_velocity
+        return np.array([wind_x, wind_y, wind_z])
 
     def visualize(self, duration=20):
         """可视化风速模型在一段时间内的函数图像，将三轴风速绘制在同一张图中。"""
         print("正在生成风速模型的可视化图表...")
+        set_publication_style()  # 设置专业的出版物风格
+
         t_span = np.linspace(0, duration, 500)
         wind_velocities = np.array([self.get_wind_velocity(t) for t in t_span])
 
-        try:
-            plt.style.use('seaborn-v0_8-whitegrid')
-        except Exception:
-            plt.style.use('default')
-
         # --- 修改: 创建一个子图而不是三个 ---
-        fig, ax = plt.subplots(1, 1, figsize=(14, 7), dpi=120)
-        ax.set_title('Realistic Wind Velocity Model', fontsize=18, weight='bold')
-        
-        axis_labels, colors = ['X-axis', 'Y-axis', 'Z-axis'], ['#c0392b', '#2980b9', '#27ae60']
+        fig, ax = plt.subplots(1, 1)
+        axis_labels, colors = ['X-axis', 'Y-axis', 'Z-axis'], ['#d62728', '#1f77b4', '#2ca02c']
 
         # --- 修改: 在同一个图(ax)上绘制三条曲线 ---
         for i in range(3):
-            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=2.5, label=f'Wind Velocity on {axis_labels[i]}')
+            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=1.5, label=f'Wind Velocity on {axis_labels[i]}')
 
         # --- 修改: 为单个图表设置标签、图例和网格 ---
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Velocity (m/s)')
-        ax.legend(loc='upper right')
         ax.grid(True, which='both', linestyle=':', linewidth=0.6)
         ax.axhline(0, color='black', lw=0.8, linestyle='--', alpha=0.7)
 
-        plt.tight_layout()
+        handles, labels = ax.get_legend_handles_labels()
+        # 使用 fig.legend() 在整个图表的顶部创建图例
+        fig.legend(handles, labels,
+               loc='upper center',      # 定位在顶部中央
+               bbox_to_anchor=(0.5, 0.98), # 精确控制位置
+               ncol=len(handles),       # 实现水平布局
+               frameon=True,            # *** 核心修改: 设置为True来显示图例边框 ***
+               edgecolor='black'       # 明确边框颜色为黑色
+               )    
+        
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
         plt.show()
     
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
@@ -194,7 +212,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     :param quad_mpc:
     :type quad_mpc: Quad3DMPC
     :param av_speed:
-    :param reference_type:
+    :param reference_type:S
     :param plot:
     :return:
     """
@@ -242,7 +260,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
                                                      world_rad=world_radius, full_traj=reference_traj)
 
     start_time = time.time()
-    max_simulation_time = 10000
+    max_simulation_time = 20000
 
     ref_u = reference_u[0, :]
     quad_trajectory = np.zeros((len(reference_timestamps), len(quad_current_state)))
@@ -389,7 +407,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
             #print(f"在线GP更新耗时: {time.time() - update_start_time:.4f}s")
 
             # --- 在初始优化后可视化GP拟合情况 (一次) ---
-            if total_sim_time >= 9.0 and not snapshot_visualization_done:
+            if total_sim_time >= 8.0 and not snapshot_visualization_done:
                 # 检查是否有任何一个GP维度已经训练过了
                 if any(gp.is_trained_once for gp in online_gp_manager.gps):
                     print(f"\n📸 [快照] 仿真时间 {total_sim_time:.2f}s, 生成当前GP回归效果快照...")
@@ -442,13 +460,18 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
                 mpc_planned_states=out_x_pred, 
                 snapshot_info_str=f"In-Flight Snapshot @ SimTime {out_total_sim_time:.2f}s"
             )
-            out_online_gp_manager.visualize_training_history()
+            #out_online_gp_manager.visualize_training_history()
         
         # trajectory_tracking_results(reference_timestamps, reference_traj, quad_trajectory,
         #                             reference_u, u_optimized_seq, title)
 
-        tracking_results(reference_timestamps, reference_traj, quad_trajectory,
-                                    reference_u, u_optimized_seq, title)
+        tracking_results_with_wind(
+            t_ref=reference_timestamps,
+            x_ref=reference_traj,
+            x_executed=quad_trajectory,
+            title=title,
+            wind_model=wind_model # <-- 关键改动
+        )
     # --- 新增：绘制在线GP结果 ---
     if online_gp_manager and history_gp_input_velocities and history_gp_target_residuals and visualized_all:
         print("\n--- Plotting Online GP Collected Data: Input Velocity vs. Target Residual ---")
@@ -503,7 +526,7 @@ if __name__ == '__main__':
     traj_type_vec = [{"random": 1}]
     traj_type_labels = ["Random"]
     
-    av_speed_vec = [[2.5],
+    av_speed_vec = [[1.5,2.0,2.5,3.0,3.5],
                     [12.0],
                     [12.0]]
     # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
@@ -561,13 +584,13 @@ if __name__ == '__main__':
             'num_dimensions': 3,
             'main_process_device': 'cuda',
             'worker_device_str': 'cuda',
-            'buffer_level_capacities': [5, 25, 20], # 三层缓冲区容量
-            'buffer_level_sparsity': [1, 3, 5],      # 稀疏因子：每1/2/5个点存入
-            'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
-            'min_points_for_ema': 30,                # 启用EMA所需的最小数据点
-            'refit_hyperparams_interval': 25,       # 触发再训练的更新次数间隔
-            'worker_train_iters': 30,               # 后台训练迭代次数
-            'worker_lr': 0.05,                       # 训练学习率
+            'buffer_level_capacities': [5, 10, 15], # 三层缓冲区容量
+            'buffer_level_sparsity': [2, 4, 6],      # 稀疏因子：每1/2/5个点存入
+            'min_points_for_initial_train': 15,      # 触发首次训练的最小数据点
+            'min_points_for_ema': 15,                # 启用EMA所需的最小数据点
+            'refit_hyperparams_interval': 17,       # 触发再训练的更新次数间隔
+            'worker_train_iters': 20,               # 后台训练迭代次数
+            'worker_lr': 0.045,                       # 训练学习率
             'ema_alpha': 0.05,                       # EMA平滑系数
             }
             online_gp_manager = IncrementalGPManager(config=online_gp_config)
@@ -631,20 +654,19 @@ if __name__ == '__main__':
 
     # 定义每个控制器的绘图样式
     controller_plot_map = {
-        'DGP': {'color': '#9b59b6', 'linestyle': '-', 'linewidth': 1.7, 'label': 'DGP-MPC', 'fill_alpha': 0.25, 'zorder': 4},
-        'SGP': {'color': '#f1c40f', 'linestyle': '-', 'linewidth': 1.7, 'label': 'SGP-MPC', 'fill_alpha': 0.05, 'zorder': 3},
-        'nominal': {'color': '#3498db', 'linestyle': '-', 'linewidth': 1.7, 'label': 'Nominal MPC', 'fill_alpha': 0.15, 'zorder': 1},
+        'DGP': {'color': '#9467bd', 'linestyle': '-', 'linewidth': 1.7, 'label': 'DGP-MPC', 'fill_alpha': 0.25, 'zorder': 4},
+        'SGP': {'color': '#bcbd22', 'linestyle': '-', 'linewidth': 1.7, 'label': 'SGP-MPC', 'fill_alpha': 0.05, 'zorder': 3},
+        'nominal': {'color': '#17becf', 'linestyle': '-', 'linewidth': 1.7, 'label': 'Nominal MPC', 'fill_alpha': 0.15, 'zorder': 1},
         'perfect': {'color': '#2ecc71', 'linestyle': '--', 'linewidth': 1.7, 'label': 'Perfect Model', 'fill_alpha': 0,'zorder': 2},
     }
     
     # 调用新的绘图函数，传入内存中的数据字典
     plot_tracking_error_comparison(
         results_data=all_results_data,
-        controller_map=controller_plot_map,
-        title="Controller Tracking Error Comparison"
+        controller_map=controller_plot_map
     )
     # --- 修改结束 ---
     
-    mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=26)
+    mse_tracking_experiment_plot(v_max, mse, traj_type_labels, model_vec, legends, [y_label], t_opt=t_opt, font_size=14)
 
 # python src/experiments/comparative_experiment.py --model_version 89954f3 --model_name simple_sim_gp --model_type gp --fast

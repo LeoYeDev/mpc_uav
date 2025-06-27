@@ -597,12 +597,12 @@ class Quad3DOptimizer:
                 p_values.extend(state_for_gp)
                 p_values.append(trigger_val)
             
-            # 2. 添加在线GP参数的数值 (如果启用)
-            if self.use_online_gp:
-                if online_gp_predictions is not None and j < online_gp_predictions.shape[0]:
-                    p_values.extend(online_gp_predictions[j, :])
-                else:
-                    p_values.extend([0.0, 0.0, 0.0]) # 如果没有预测，则补偿为0
+                # 2. 添加在线GP参数的数值 (如果启用)
+                if self.use_online_gp:
+                    if online_gp_predictions is not None and j < online_gp_predictions.shape[0]:
+                        p_values.extend(online_gp_predictions[j, :])
+                    else:
+                        p_values.extend([0.0, 0.0, 0.0])
             
             # 3. 如果p_values不为空，则设置给求解器
             if p_values:

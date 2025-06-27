@@ -73,7 +73,7 @@ class ModelFitConfig:
     # ## Visualization ## #
     # Training mode
     visualize_training_result = True
-    visualize_data = False
+    visualize_data = True
 
     # Visualization mode
     grid_sampling_viz = True

@@ -3,17 +3,14 @@ import numpy as np
 import torch
 import gpytorch
 from src.utils.visual_set import set_publication_style
-# 假设项目的根目录 'src' 已经被添加到了 PYTHONPATH
+from matplotlib.ticker import StrMethodFormatter # <-- 新增导入
+
 # 注意: 如果 gp_common 模块无法找到，请确保正确设置了 PYTHONPATH
 try:
     from src.model_fitting.gp_common import world_to_body_velocity_mapping
 except ImportError:
-    # 提供一个备用方案，以防在不同环境下运行此脚本
     print("警告：无法从 src.model_fitting.gp_common 导入，将使用本地的虚拟函数。")
-    def world_to_body_velocity_mapping(states):
-        # 这是一个虚拟实现，仅用于代码不报错。
-        # 在实际项目中，请确保 PYTHONPATH 设置正确。
-        return states
+
 
 def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_str, **kwargs):
     """
@@ -42,21 +39,21 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
     mpc_plan_means, mpc_plan_vars = online_gp_manager.predict(future_velocities_np)
 
     # --- 2. 图表风格设定：注入专业学术感 ---
-    set_publication_style(font_size=16)  # 设置专业的出版物风格
+    set_publication_style()  # 设置专业的出版物风格
 
     num_dims = online_gp_manager.num_dimensions
-    fig, axes = plt.subplots(num_dims, 1, figsize=(12, 5 * num_dims), squeeze=False, dpi=150)
+    fig, axes = plt.subplots(num_dims, 1, squeeze=False)
     #fig.suptitle(f"Online Gaussian Process State Snapshot: {snapshot_info_str}", fontsize=20, weight='bold')
 
     axis_map = {0: 'Vx', 1: 'Vy', 2: 'Vz'}
     colors = {
-        'fit_mean': '#0072BD',
-        'fit_ci': '#A2C8EC',
-        'train_bubble_face': '#2E86C1',
-        'train_bubble_edge': '#1B4F72',
-        'predict_bubble_face': '#E74C3C', # 更鲜艳的红色
-        'predict_bubble_edge': '#943126', # 更深的红色边缘
-        'predict_ci_bar': "#DE5C4E",     # 更明显的粉红色误差棒
+        'fit_mean': '#e74c3c',
+        'fit_ci': "#e74c3c",
+        'train_bubble_face': "#3498db",
+        'predict_bubble_face': "#ffffff", # 更鲜艳的红色
+        'predict_bubble_edge': '#d62728', # 更深的红色边缘
+        'predict_ci_bar': "#d18c8c",     # 更明显的粉红色误差棒
+        'buffer_history': 'lightgrey' # 新增：为历史数据点定义颜色
     }
 
     # --- 3. 逐维度精细绘图 ---
@@ -71,6 +68,24 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
             ax.text(0.5, 0.5, 'Waiting for initial data...', ha='center', va='center', transform=ax.transAxes, fontsize=14, color='grey')
             ax.grid(True, linestyle='--', alpha=0.5)
             continue
+        
+        # ================================================================
+        # --- 新增代码部分：绘制缓冲区内的所有历史数据点 ---
+        # ================================================================
+        # all_buffer_points = []
+        # all_buffer_points = list(gp.full_history_buffer)
+        
+        # if all_buffer_points:
+        #     # 提取x和y坐标
+        #     buffer_x = np.array([p[0] for p in all_buffer_points])
+        #     buffer_y = np.array([p[1] for p in all_buffer_points])
+        #     # 使用小的、半透明的灰色点来绘制历史数据
+        #     ax.scatter(buffer_x, buffer_y, s=25, 
+        #                facecolors=colors['buffer_history'], alpha=0.5,
+        #                label='Buffer History', zorder=1)
+        # ================================================================
+        # --- 新增代码结束 ---
+        # ================================================================
 
         # a) 绘制当前缓冲区中的“真实”训练数据点 (蓝色气泡)
         train_x_denorm, train_y_denorm = None, None
@@ -78,10 +93,9 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
         if training_data_raw:
             train_x_denorm = np.array([p[0] for p in training_data_raw])
             train_y_denorm = np.array([p[1] for p in training_data_raw])
-            ax.scatter(train_x_denorm, train_y_denorm, s=60, 
-                       facecolors=colors['train_bubble_face'], alpha=0.6,
-                       edgecolors=colors['train_bubble_edge'], linewidth=1.5,
-                       label='Training Data', zorder=10)
+            ax.scatter(train_x_denorm, train_y_denorm, s=25, 
+                       facecolors=colors['train_bubble_face'], alpha=0.99,
+                       label='Training Data', zorder=4)
 
         # b) 绘制GP在训练数据范围内的拟合曲线
         if train_x_denorm is not None and train_x_denorm.size > 0:
@@ -108,10 +122,10 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
             fit_var_dim_i = var_norm * (gp.r_var_ema + gp.epsilon)
             fit_std_dim_i = np.sqrt(np.maximum(fit_var_dim_i, 1e-9))
 
-            ax.plot(x_dense_denorm, fit_mean_dim_i, color=colors['fit_mean'], lw=3, label='GP Fit Mean', zorder=5) # 增加线宽
+            ax.plot(x_dense_denorm, fit_mean_dim_i, color=colors['fit_mean'], lw=3, label='GP Fit Mean', zorder=3) # 增加线宽
             
             ax.fill_between(x_dense_denorm, fit_mean_dim_i - 1.96 * fit_std_dim_i, fit_mean_dim_i + 1.96 * fit_std_dim_i,
-                            color=colors['fit_ci'], alpha=0.5, label='95% Confidence Interval') # 增加透明度
+                            color=colors['fit_ci'], alpha=0.2, label='95% Confidence Interval',zorder=2) # 增加透明度
 
         # c) 绘制MPC规划点的预测结果 (红色气泡)
         pred_inputs_dim_i = future_velocities_np[:, i]
@@ -119,22 +133,28 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
         std_pred_dim_i = np.sqrt(np.maximum(mpc_plan_vars[:, i], 1e-9))
         
         # 绘制更醒目的误差棒
-        ax.errorbar(pred_inputs_dim_i, mean_pred_dim_i, yerr=1.96 * std_pred_dim_i,
-                    fmt='none', ecolor=colors['predict_ci_bar'], elinewidth=3, # 加粗误差棒
-                    capsize=0, zorder=11, alpha=0.8, label='_nolegend_') # 增加透明度, 且不在图例中显示
+        # ax.errorbar(pred_inputs_dim_i, mean_pred_dim_i, yerr=1.96 * std_pred_dim_i,
+        #             fmt='none', ecolor=colors['predict_ci_bar'], elinewidth=5, # 加粗误差棒
+        #             capsize=0, zorder=11, alpha=0.8, label='_nolegend_') # 增加透明度, 且不在图例中显示
         # 绘制更醒目的红色气泡
-        ax.scatter(pred_inputs_dim_i, mean_pred_dim_i, s=80, # 增大尺寸
+        ax.scatter(pred_inputs_dim_i, mean_pred_dim_i, s=40, # 增大尺寸
                    facecolors=colors['predict_bubble_face'], alpha=0.85, # 增加不透明度
-                   edgecolors=colors['predict_bubble_edge'], linewidth=2.0, # 加粗边缘
-                   label='MPC Plan Prediction', zorder=12)
+                   edgecolors=colors['predict_bubble_edge'], linewidth=1.0, # 加粗边缘
+                   label='MPC Plan Prediction', zorder=5)
 
         # d) 图表元素精细化调整
-        ax.set_xlabel(f"{axis_name}-axis (m/s)", fontsize=14)
-        ax.set_ylabel(f"{axis_name} (m/s²)", fontsize=14)
+        x_sub = axis_name.lower().replace('v', '') # 从 'Vx' 中提取 'x'
+        x_label = fr'$v_{{{x_sub}}}$ (m/s)'
+        y_label = fr'$\Delta a_{{{x_sub}}}$ (m/s²)'
+        
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
         
         ax.grid(True, which='both', linestyle=':', linewidth=0.7)
         ax.axhline(0, color='black', lw=1.0, linestyle='--', alpha=0.7)
 
+        # --- 新增：强制Y轴刻度标签显示为一位小数的浮点数 ---
+        ax.yaxis.set_major_formatter(StrMethodFormatter('{x:1.1f}'))
      # --- 4. 创建一个共享的、水平的、位于顶部的图例 (如图所示) ---
     # 从最后一个子图获取图例句柄和标签
     handles, labels = ax.get_legend_handles_labels()
@@ -145,14 +165,8 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                bbox_to_anchor=(0.5, 0.98), # 精确控制位置
                ncol=len(handles),       # 实现水平布局
                frameon=True,            # *** 核心修改: 设置为True来显示图例边框 ***
-               edgecolor='black',       # 明确边框颜色为黑色
-               fontsize=14)             # 设置字体大小
+               edgecolor='black'       # 明确边框颜色为黑色
+               )             
 
 
-    # 调整子图布局，为顶部的标题和图例留出空间
-    plt.subplots_adjust(hspace=0.4, top=0.90, bottom=0.08)
-    
-    # 调整子图布局，增加垂直间距
-    plt.subplots_adjust(hspace=0.4, top=0.92, bottom=0.08)
     plt.show(block=False)
-    plt.pause(0.1)

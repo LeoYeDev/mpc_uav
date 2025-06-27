@@ -16,6 +16,99 @@ from src.model_fitting.gp_common import GPDataset, restore_gp_regressors, read_d
 from src.model_fitting.gp_visualization import gp_visualization_experiment
 from config.configuration_parameters import ModelFitConfig as Conf
 
+# 假设 set_publication_style 和 SCI_COLORS 已经可以从 visualization 模块导入
+try:
+    from src.utils.visual_set import set_publication_style, SCI_COLORS
+except ImportError:
+    print("警告：无法从 src.utils.visualization 导入样式函数，将使用备用样式。")
+
+# ==============================================================================
+# --- 新增：为离线GP训练优化的可视化函数 ---
+# ==============================================================================
+def plot_offline_gp_fit(gp_regressor, x_train, y_train, full_dataset_gp, cluster_to_plot, title, input_dim, output_dim):
+    """
+    创建一个出版物级的图表，用于可视化单个离线GP模型的拟合效果。
+
+    :param gp_regressor: 训练好的 npGPRegression 实例。
+    :param x_train: np.ndarray, 用于训练的输入数据。
+    :param y_train: np.ndarray, 用于训练的目标数据。
+    :param full_dataset_gp: GPDataset, 包含完整数据（用于绘制背景）。
+    :param cluster_to_plot: int, 要绘制的聚类ID。
+    :param title: str, 图表标题。
+    """
+    # 1. 应用统一的出版物级绘图风格
+    set_publication_style(base_size=14)
+
+    # 2. 从数据集中获取特定聚类的所有点作为背景
+    x_all_cluster = full_dataset_gp.get_x(cluster=cluster_to_plot)
+    y_all_cluster = full_dataset_gp.get_y(cluster=cluster_to_plot)
+    
+    # 假设输入特征是1维的，这在我们的项目中是成立的
+    x_feature_dim = 0
+    
+    # 3. 创建一个密集的点集，用于绘制平滑的GP预测曲线
+    x_min, x_max = x_all_cluster[:, x_feature_dim].min(), x_all_cluster[:, x_feature_dim].max()
+    x_range_ext = (x_max - x_min) * 0.05
+    x_dense = np.linspace(x_min - x_range_ext, x_max + x_range_ext, 300).reshape(-1, 1)
+
+    # 4. 获取GP在密集点集上的预测均值和标准差
+    y_mean, y_std = gp_regressor.predict(x_dense, return_std=True)
+    # 将 y_std 从方差转换为标准差 (如果需要)
+    if y_std.ndim > 1: # 如果返回的是协方差矩阵
+        y_std = np.sqrt(np.diag(y_std))
+    
+    # 5. 开始绘图
+    fig, ax = plt.subplots(figsize=(10, 7), dpi=120)
+
+    # a. 将所有数据点作为浅色背景
+    ax.scatter(x_all_cluster[:, x_feature_dim], y_all_cluster,
+               s=25,
+               color='lightgray',
+               alpha=0.7,
+               label='Full Dataset')
+
+    # b. 突出显示用于训练的数据点
+    ax.scatter(x_train[:, x_feature_dim], y_train,
+               s=70,
+               facecolors='w',
+               edgecolors='#3498db', 
+               linewidth=2.0,
+               zorder=10,
+               label='Training Points')
+
+    # c. 绘制GP拟合的均值曲线
+    ax.plot(x_dense, y_mean,
+            color="#e74c3c", # 蓝色
+            lw=2.5,
+            zorder=5,
+            label='GP Mean Fit')
+
+    # d. 绘制95%置信区间 (1.96 * std)
+    ax.fill_between(
+        x_dense.ravel(),
+        y_mean - 1.96 * y_std,
+        y_mean + 1.96 * y_std,
+        color="#e74c3c",
+        alpha=0.2,
+        label='95% Confidence Interval'
+    )
+
+    # 6. 美化图表
+    # 从数据集中获取原始的特征和目标维度信息用于标签
+    # --- 核心修改：使用LaTeX动态生成坐标轴标签 ---
+    axis_map = {7: 'x', 8: 'y', 9: 'z'}
+    x_sub = axis_map.get(input_dim, f'd_{input_dim}')
+    y_sub = axis_map.get(output_dim, f'd_{output_dim}')
+    # 使用 r'' 创建原始字符串，并用 $...$ 包裹LaTeX公式
+    x_label = fr'$v_{{{x_sub}}}$ (m/s)'
+    y_label = fr'$\Delta a_{{{y_sub}}}$ (m/s²)'
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.legend(loc='best')
+    ax.grid(True, linestyle=':', alpha=0.7)
+    
+    fig.tight_layout()
+    plt.show()
 
 def plot_gp_regression(x_test, y_test, x_train, y_train, gp_mean, gp_std, gp_regressor, labels, title='', n_samples=3):
 
@@ -286,6 +379,20 @@ def main(x_features, u_features, reg_y_dim, quad_sim_options, dataset_name,
         gp_regressors.append(npGPRegression(kernel=exponential_kernel, **gp_params))
         gp_regressors[cluster] = gp_train_and_save([x_train], [y_train], [gp_regressors[cluster]], True, save_file_name,
                                                    save_file_path, [reg_y_dim], cluster, progress_bar=False)[0]
+        
+        # --- 核心修改：在训练后调用新的可视化函数 ---
+        print(f"\n[可视化] 正在为维度 {reg_y_dim}, 集群 {cluster} 生成拟合图...")
+        plot_offline_gp_fit(
+            gp_regressor=gp_regressors[cluster],
+            x_train=x_train,
+            y_train=y_train,
+            full_dataset_gp=gp_dataset,
+            cluster_to_plot=cluster,
+            title=f"Offline GP Fit for Residual (Input Dim: {x_features[0]}, Output Dim: {reg_y_dim})",
+            input_dim=x_features[0],
+            output_dim=reg_y_dim
+        )
+        # --- 修改结束 ---
 
     if visualize_model:
         gp_ensemble = GPEnsemble()
@@ -296,7 +403,7 @@ def main(x_features, u_features, reg_y_dim, quad_sim_options, dataset_name,
                                     x_features, u_features, reg_y_dim,
                                     grid_sampling_viz=True, pre_set_gp=gp_ensemble)
 
-
+        
 def gp_evaluate_test_set(gp_regressors, gp_dataset, pruned=False, timed=False, progress_bar=False):
     """
     Runs GP prediction on a specified dataset.

@@ -124,10 +124,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--model_version", type=str, default="",
+    parser.add_argument("--model_version", type=str, default="89954f3",
                         help="Version to load for the regression models. By default it is an 8 digit git hash.")
 
-    parser.add_argument("--model_name", type=str, default="",
+    parser.add_argument("--model_name", type=str, default="simple_sim_gp",
                         help="Name of the regression model within the specified <model_version> folder.")
 
     input_arguments = parser.parse_args()

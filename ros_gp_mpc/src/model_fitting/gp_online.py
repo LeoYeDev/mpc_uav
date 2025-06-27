@@ -218,7 +218,12 @@ class IncrementalGP:
         
         # 数据缓冲区
         self.buffer = MultiLevelBuffer(config['buffer_level_capacities'], config['buffer_level_sparsity'])
-        
+        # --- 新增：一个用于存储所有历史数据的完整缓冲区 (无稀疏) ---
+        # capacities = np.array(config['buffer_level_capacities'])
+        # sparsity = np.array(config['buffer_level_sparsity'])
+        # max_history_size = int(np.sum(capacities * sparsity))
+        # self.full_history_buffer = deque(maxlen=max_history_size)
+
         # EMA (指数移动平均) 归一化统计量
         self.ema_alpha = config.get('ema_alpha', 0.05)
         self.v_mean_ema, self.v_var_ema = 0.0, 1.0
@@ -237,6 +242,8 @@ class IncrementalGP:
         self.last_training_history = TrainingHistory() # 保存最近一次的训练历史
 
     def add_data_point(self, x, y):
+        # --- 修改：同时向两个缓冲区添加数据 ---
+        # self.full_history_buffer.append((x, y)) # 1. 记录到完整历史中
         self.buffer.insert(x, y)
         self.updates_since_last_train += 1
     
