@@ -572,62 +572,58 @@ def trajectory_tracking_results(t_ref, x_ref, x_executed, u_ref, u_executed, tit
 
 
 def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, legends, y_labels, t_opt=None,
-                                 font_size=14):
+                                 font_size=9):
     
     # 1. 调用统一的样式函数 (假设该函数已在别处定义)
-    set_publication_style(base_size=font_size)
+    set_publication_style(base_size=9)
     # 2. 定义控制器绘图样式字典，便于管理和修改
     controller_plot_map = {
-        'DGP':       {'color': '#9b59b6', 'marker': 's', 'linestyle': '-', 'linewidth': 2, 'markersize': 8, 'label': 'DGP-MPC'},
+        'AR':       {'color': '#9b59b6', 'marker': 's', 'linestyle': '-', 'linewidth': 2, 'markersize': 8, 'label': 'AR-MPC'},
         'SGP':       {'color': '#f1c40f', 'marker': '^', 'linestyle': '-', 'linewidth': 2, 'markersize': 8, 'label': 'SGP-MPC'},
         'nominal':   {'color': '#3498db', 'marker': 'o', 'linestyle': '--', 'linewidth': 2, 'markersize': 8, 'label': 'Nominal MPC'},
-        'perfect':   {'color': '#2ecc71', 'marker': 'x', 'linestyle': ':', 'linewidth': 3, 'markersize': 8, 'label': 'Perfect Model'},
-        'default':   {'color': 'grey', 'marker': '.', 'linestyle': ':', 'linewidth': 1.5, 'label': 'Unknown'}
+        'perfect':   {'color': '#2ecc71', 'marker': 'x', 'linestyle': ':', 'linewidth': 2, 'markersize': 8, 'label': 'Perfect Model'},
+        'default':   {'color': 'grey', 'marker': '.', 'linestyle': ':', 'linewidth': 2, 'label': 'Unknown'}
     }
 
-    # 3. 简化子图创建逻辑
+     # 创建子图
     variants_dim = mse.shape[3] if len(mse.shape) == 4 else 1
     num_traj_types = len(traj_type_vec)
     fig_rmse, axes_rmse = plt.subplots(variants_dim, num_traj_types, 
-                                       figsize=(7 * num_traj_types, 6 * variants_dim), 
-                                       sharex='col', sharey='row', squeeze=False)
+                                       figsize=(3.5, 2.2 * variants_dim), 
+                                       sharex='col', sharey='row')
 
-    # 4. 修复绘图和标签逻辑
+    # 检查 axes_rmse 类型
+    if variants_dim == 1 and num_traj_types == 1:
+        axes_rmse = np.array([[axes_rmse]])  # 转换为二维数组
+    elif variants_dim == 1 or num_traj_types == 1:
+        axes_rmse = np.atleast_2d(axes_rmse)  # 转换为二维数组
+    # 修复绘图和标签逻辑
     for seed_id, track_seed in enumerate(traj_type_vec):
         for j in range(variants_dim):
             ax = axes_rmse[j, seed_id]
             for i, controller_name in enumerate(legends):
                 style = controller_plot_map.get(controller_name, controller_plot_map['default'])
                 mse_data = mse[seed_id, :, i, j] if len(mse.shape) == 4 else mse[seed_id, :, i]
-                # 总是为每条线提供完整的样式和标签
                 ax.plot(v_max[seed_id, :], mse_data, **style)
-            
+
             # 设置坐标轴标签和标题
             if j == variants_dim - 1:
-                ax.set_xlabel(r'$v_{max}$ (m/s)')
+                ax.set_xlabel(r'$v_{max}$ [m/s]')
             if seed_id == 0:
                 ax.set_ylabel(y_labels[j])
-            
-            ax.grid(True, linestyle=':', alpha=0.7)
+            ax.grid(True)
 
-    # 5. 修复图例创建逻辑
-    handles, labels = axes_rmse[0, 0].get_legend_handles_labels()
-    by_label = dict(zip(labels, handles)) # 使用字典自动去重
-    
-    fig_rmse.legend(by_label.values(), by_label.keys(),
-                    loc='upper center',
-                    bbox_to_anchor=(0.5, 0.98), # 调整位置以适应布局
-                    ncol=len(by_label), 
-                    frameon=True,            # *** 核心修改: 设置为True来显示图例边框 ***
-                    edgecolor='black',       # 明确边框颜色为黑色
-                    )
+        # 显示图例
+        ax.legend(loc='upper right', frameon=True)
+        fig_rmse.tight_layout()
 
-    fig_rmse.tight_layout(rect=[0, 0, 1, 0.9]) # 为图例留出空间
+    # 调整布局并保存图像
+    plt.savefig("mse_tracking_experiment_plot.pdf", bbox_inches='tight')
     plt.show()
 
     # --- 修复第二个图 (t_opt) 的绘图和图例逻辑 ---
     if t_opt is not None:
-        fig_time, ax_time = plt.subplots(figsize=(10, 6))
+        fig_time, ax_time = plt.subplots(figsize=(3.5, 2.2))
         
         v_flat = v_max.flatten()
         t_opt_flat = t_opt.reshape(-1, len(legends))
@@ -637,24 +633,17 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
         for i, controller_name in enumerate(legends):
             style = controller_plot_map.get(controller_name, controller_plot_map['default'])
             t_opt_sorted = t_opt_flat[sort_indices, i]
-            ax_time.plot(v_sorted, t_opt_sorted, **style)
+            ax_time.plot(v_sorted, t_opt_sorted*1000, **style)
 
-        ax_time.set_xlabel(r'$v_{max}$ (m/s)')
-        ax_time.set_ylabel('Mean Optimization Time (s)')
-        ax_time.grid(True, linestyle=':', alpha=0.7)
-        
-        handles, labels = ax_time.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles)) # 使用字典自动去重
-    
-        fig_time.legend(by_label.values(), by_label.keys(),
-                    loc='upper center',
-                    bbox_to_anchor=(0.5, 0.98), # 调整位置以适应布局
-                    ncol=len(by_label), 
-                    frameon=True,            # *** 核心修改: 设置为True来显示图例边框 ***
-                    edgecolor='black',       # 明确边框颜色为黑色
-                    )
-    
-        fig_rmse.tight_layout(rect=[0, 0, 1, 0.9]) # 为图例留出空间
+        ax_time.set_xlabel(r'$v_{max}$ [m/s]')
+        ax_time.set_ylabel('Avg.Opt.Time [ms]')
+        ax_time.grid(True)
+
+        # 显示图例
+        ax_time.legend(loc='upper right', frameon=True)
+        fig_time.tight_layout()
+
+        plt.savefig("t_opt_tracking_experiment_plot.pdf", bbox_inches='tight')
         plt.show()
 
 def load_past_experiments():

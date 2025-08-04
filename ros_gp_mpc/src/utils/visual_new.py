@@ -22,7 +22,7 @@ def tracking_results_with_wind(t_ref, x_ref, x_executed, title, wind_model=None)
     :param wind_model: RealisticWindModel (可选), 用于获取风速的风场模型实例。
     """
     # 1. 设置专业的绘图风格
-    set_publication_style()
+    set_publication_style(base_size=9)
 
     fig, ax = plt.subplots(figsize=(9, 7))
 
@@ -117,16 +117,16 @@ def plot_tracking_error_comparison(results_data, controller_map):
     从内存中存储的多个仿真结果中加载数据，并绘制一个用于论文的跟踪误差对比图。
     该图的风格模仿了您提供的参考图片。
     :param results_data: 一个字典，键是控制器名称，值是包含仿真结果的另一个字典。
-                         例如: {'DGP-MPC': {'t_ref': array, 'x_ref': array, 'x_executed': array}, ...}
+                         例如: {'AR-MPC': {'t_ref': array, 'x_ref': array, 'x_executed': array}, ...}
     :param controller_map: 一个字典，用于定义每个控制器的绘图样式。
-                           例如: {'DGP-MPC': {'color': 'purple', 'linestyle': '-', 'label': 'DGP-MPC'}, ...}
+                           例如: {'AR-MPC': {'color': 'purple', 'linestyle': '-', 'label': 'ARMPC'}, ...}
     :param title: 图表的总标题。
     """
     # --- 1. 设置专业的绘图风格 (与参考图保持一致) ---
-    set_publication_style()  # 设置专业的出版物风格
+    set_publication_style(base_size=9)  # 设置专业的出版物风格
 
     # --- 2. 创建 3x1 的子图布局 (分别对应 X, Y, Z 轴误差) ---
-    fig, axes = plt.subplots(3, 1, sharex=True)
+    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(3.5, 1.2*3))  # 单栏图尺寸
     
      # --- 3. 循环加载每个控制器的结果并绘图 ---
     for controller_name, data in results_data.items():
@@ -162,35 +162,38 @@ def plot_tracking_error_comparison(results_data, controller_map):
                 ax.fill_between(t, 0, pos_error[:, i], color=color, alpha=fill_alpha, zorder=zorder)
 
     # --- 4. 美化图表 ---
-    axis_labels = ['Positional Error-X (m)', 'Positional Error-Y (m)', 'Positional Error-Z (m)']
+    axis_labels = ['Error-X [m]', 'Error-Y [m]', 'Error-Z [m]']
     for i, ax in enumerate(axes):
         ax.set_ylabel(axis_labels[i])
-        ax.grid(True, linestyle=':', which='both')
+        ax.grid(True)
         # 设置Y轴的下限为0，让图形更美观
         ax.set_ylim(bottom=0)
-
         # 优化Y轴刻度范围，避免数据贴近上边缘
         ax.set_ylim(top=ax.get_ylim()[1] * 1.1) 
+        from matplotlib.ticker import StrMethodFormatter
+        ax.yaxis.set_major_formatter(StrMethodFormatter('{x:.1f}'))  # 设置为一位小数
 
     # 设置共享的X轴标签
-    axes[-1].set_xlabel('Time (s)')
+    axes[-1].set_xlabel('Time [s]')
 
-    # --- 5. 创建位于顶部的共享图例 ---S
-    # 从第一个子图获取所有曲线的句柄和标签
-    handles, labels = axes[0].get_legend_handles_labels()
-    # 通过字典去重，以防同一个控制器被多次添加图例
-    by_label = dict(zip(labels, handles))
-    # 在图表顶部创建图例
-    fig.legend(by_label.values(), by_label.keys(),
+    # 图例设置
+    fig.tight_layout() 
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels,
                loc='upper center',      # 定位在顶部中央
-               bbox_to_anchor=(0.5, 0.98), # 精确控制位置
+               bbox_to_anchor=(0.5, 0.92), # 精确控制位置
                ncol=len(handles),       # 实现水平布局
-               frameon=True,            # *** 核心修改: 设置为True来显示图例边框 ***
-               edgecolor='black',       # 明确边框颜色为黑色
-               fontsize=14)             # 设置字体大小
+               frameon=True,
+               handlelength=1.2,            # 图例线的长度（可调）
+               columnspacing=1.2,           # 列间距
+               borderpad=0.3                # 边框内边距
+               )      
+    # 调整子图间距（垂直间距hspace是关键）
+    plt.subplots_adjust(
+        hspace=0.1,  # 增加子图间距
+        top=0.85     # 预留顶部空间给图例
+    )
 
-    fig.tight_layout(rect=[0, 0, 1, 0.95]) # 调整布局，防止元素重叠
-
-    # --- 7. 显示 ---
+    plt.savefig("tracking_error_comparison.pdf", bbox_inches="tight")
     plt.show()
 

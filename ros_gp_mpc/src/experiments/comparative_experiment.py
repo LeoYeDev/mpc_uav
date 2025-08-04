@@ -104,37 +104,25 @@ class RealisticWindModel:
 
     def visualize(self, duration=20):
         """可视化风速模型在一段时间内的函数图像，将三轴风速绘制在同一张图中。"""
-        print("正在生成风速模型的可视化图表...")
-        set_publication_style()  # 设置专业的出版物风格
+        set_publication_style(base_size=9)  # 设置专业的出版物风格
 
         t_span = np.linspace(0, duration, 500)
         wind_velocities = np.array([self.get_wind_velocity(t) for t in t_span])
 
-        # --- 修改: 创建一个子图而不是三个 ---
-        fig, ax = plt.subplots(1, 1)
+        fig, ax = plt.subplots(figsize=(3.5, 2.2))
         axis_labels, colors = ['X-axis', 'Y-axis', 'Z-axis'], ['#d62728', '#1f77b4', '#2ca02c']
-
-        # --- 修改: 在同一个图(ax)上绘制三条曲线 ---
         for i in range(3):
-            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=1.5, label=f'Wind Velocity on {axis_labels[i]}')
+            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=1.5, label=f'{axis_labels[i]}')
+        ax.set_xlabel('Time [s]')
+        ax.set_ylabel('Velocity [m/s]')
+        ax.grid(True)
 
-        # --- 修改: 为单个图表设置标签、图例和网格 ---
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Velocity (m/s)')
-        ax.grid(True, which='both', linestyle=':', linewidth=0.6)
-        ax.axhline(0, color='black', lw=0.8, linestyle='--', alpha=0.7)
+        #显示图例
+        ax.legend(loc='upper right', frameon=True)
+        fig.tight_layout()
 
-        handles, labels = ax.get_legend_handles_labels()
-        # 使用 fig.legend() 在整个图表的顶部创建图例
-        fig.legend(handles, labels,
-               loc='upper center',      # 定位在顶部中央
-               bbox_to_anchor=(0.5, 0.98), # 精确控制位置
-               ncol=len(handles),       # 实现水平布局
-               frameon=True,            # *** 核心修改: 设置为True来显示图例边框 ***
-               edgecolor='black'       # 明确边框颜色为黑色
-               )    
-        
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        # 保存图像
+        plt.savefig("wind_velocity_visualization.pdf", bbox_inches="tight")
         plt.show()
     
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
@@ -432,9 +420,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     max_vel = np.max(np.sqrt(np.sum(reference_traj[:, 7:10] ** 2, 1)))
 
     #title = r'$v_{max}$=%.2f m/s | RMSE: %.4f m | %s ' % (max_vel, float(rmse), legends)
-    #如果使用DGP
+    #如果使用AR
     if online_gp_manager and use_online_gp_ject:
-        title = f'DGP-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
+        title = f'AR-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
     #如果使用SGP
     elif use_gp_ject is True:
         title = f'SGP-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
@@ -482,7 +470,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
         # dim_labels = ['机体Vx', '机体Vy', '机体Vz'] 
         dim_labels = ['Body Vx', 'Body Vy', 'Body Vz'] # 使用英文
 
-        fig_scatter, axes_scatter = plt.subplots(num_dims_to_plot, 1, figsize=(10, 5 * num_dims_to_plot), sharex=False, sharey=False)
+        fig_scatter, axes_scatter = plt.subplots(num_dims_to_plot, 1, figsize=(3.5, 2 * num_dims_to_plot), sharex=False, sharey=False)
         if num_dims_to_plot == 1: axes_scatter = [axes_scatter]
 
         for i in range(num_dims_to_plot):
@@ -497,14 +485,10 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
             ax.set_xlabel(f'Input Body Velocity {dim_labels[i]} (m/s)') # 使用英文
             # ax.set_ylabel('目标加速度残差分量 (m/s^2)')
             ax.set_ylabel('Target Acceleration Residual (m/s^2)') # 使用英文
-            # ax.set_title(f'在线GP数据: 输入 {dim_labels[i]} vs. 目标残差 {dim_labels[i]}')
-            ax.set_title(f'Online GP Data: Input {dim_labels[i]} vs. Target Residual {dim_labels[i]}') # 使用英文
             ax.legend()
-            ax.grid(True, linestyle=':', alpha=0.6)
+            ax.grid(True)
         
-        # fig_scatter.suptitle(f'在线GP收集数据：速度-残差关系\n(实验: {quad_mpc.model_name}, 轨迹: {str(reference_type)}, 速度: {av_speed:.1f} m/s)', fontsize=14)
-        fig_scatter.suptitle(f'Online GP Collected Data: Velocity-Residual Relationship\n(Traj: {str(reference_type)}, Speed: {av_speed:.1f} m/s)', fontsize=14) # 使用英文
-        fig_scatter.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig("online_gp_collected_data.pdf", bbox_inches="tight")
         plt.show() # 将show调用移到main函数末尾，以显示所有图
     # --- 在线GP绘图结束 ---
     # --- 修改 1: 增加函数返回值，用于后续保存 ---
@@ -526,7 +510,10 @@ if __name__ == '__main__':
     traj_type_vec = [{"random": 1}]
     traj_type_labels = ["Random"]
     
-    av_speed_vec = [[1.5,2.0,2.5,3.0,3.5],
+    # av_speed_vec = [[1.5,2.0,2.5,3.0,3.5],
+    #                 [12.0],
+    #                 [12.0]]
+    av_speed_vec = [[3.0],
                     [12.0],
                     [12.0]]
     # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
@@ -550,7 +537,7 @@ if __name__ == '__main__':
     #加入双GP模型
     model_vec = [{"simulation_options": noisy_sim_options,
                        "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}}]
-    legends = ['DGP']
+    legends = ['AR']
 
     #加入名义模型和完美模型
     model_vec += [{"simulation_options": noisy_sim_options, "model": None}]
@@ -654,10 +641,10 @@ if __name__ == '__main__':
 
     # 定义每个控制器的绘图样式
     controller_plot_map = {
-        'DGP': {'color': '#9467bd', 'linestyle': '-', 'linewidth': 1.7, 'label': 'DGP-MPC', 'fill_alpha': 0.25, 'zorder': 4},
-        'SGP': {'color': '#bcbd22', 'linestyle': '-', 'linewidth': 1.7, 'label': 'SGP-MPC', 'fill_alpha': 0.05, 'zorder': 3},
-        'nominal': {'color': '#17becf', 'linestyle': '-', 'linewidth': 1.7, 'label': 'Nominal MPC', 'fill_alpha': 0.15, 'zorder': 1},
-        'perfect': {'color': '#2ecc71', 'linestyle': '--', 'linewidth': 1.7, 'label': 'Perfect Model', 'fill_alpha': 0,'zorder': 2},
+        'AR': {'color': '#9467bd', 'linestyle': '-', 'linewidth': 1, 'label': 'AR-MPC', 'fill_alpha': 0.25, 'zorder': 4},
+        'SGP': {'color': '#bcbd22', 'linestyle': '-', 'linewidth': 1, 'label': 'SGP-MPC', 'fill_alpha': 0.05, 'zorder': 3},
+        'nominal': {'color': '#17becf', 'linestyle': '-', 'linewidth': 1, 'label': 'Nominal MPC', 'fill_alpha': 0.15, 'zorder': 1},
+        'perfect': {'color': '#2ecc71', 'linestyle': '--', 'linewidth': 1, 'label': 'Perfect Model', 'fill_alpha': 0,'zorder': 2},
     }
     
     # 调用新的绘图函数，传入内存中的数据字典

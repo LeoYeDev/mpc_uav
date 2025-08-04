@@ -12,19 +12,79 @@ def draw_poly(traj, u_traj, t, target_points=None, target_t=None):
     :param target_t: Timestamps of the reference position keypoints. If not passed, then they are extracted from the
     t vector, assuming constant time separation.
     """
-    p_traj = traj[:, :3]
+    #绘图风格
+    # from src.utils.visual_set import set_publication_style
+    # set_publication_style(base_size=9)
 
-    fig = plt.figure()
+    # --- 2. 创建图形和3D坐标轴 ---
+    p_traj = traj[:, :3]
+    fig = plt.figure(figsize=(7, 5)) # 适当调整大小和DPI
     ax = fig.add_subplot(111, projection='3d')
-    # 只绘制轨迹，线宽加粗
-    ax.plot(p_traj[:, 0], p_traj[:, 1], p_traj[:, 2], label='Trajectory', linewidth=2.0)
-    # 不再绘制Keypoints
-    # 不再设置标题
-    ax.set_xlabel(r'$p_x$ [m]')
-    ax.set_ylabel(r'$p_y$ [m]')
-    ax.set_zlabel(r'$p_z$ [m]')
-    plt.tight_layout()
+    plt.rc('font', family='Times New Roman')  # 设置字体为 Times New Roman
+    # --- 3. 绘制轨迹 ---
+    # 使用稍深的颜色和合适的线宽
+    ax.plot(p_traj[:, 0], p_traj[:, 1], p_traj[:, 2], label='Trajectory', linewidth=1.5, color='royalblue')
+
+    # --- 4. 手动设置坐标轴范围以防止裁剪 ---
+    # 计算轨迹数据在各个轴上的范围
+    x_min, x_max = np.min(p_traj[:, 0]), np.max(p_traj[:, 0])
+    y_min, y_max = np.min(p_traj[:, 1]), np.max(p_traj[:, 1])
+    z_min, z_max = np.min(p_traj[:, 2]), np.max(p_traj[:, 2])
+
+    # 为了留出边距，扩大范围
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    z_range = z_max - z_min
+    
+    # ax.set_xlim(x_min - 0.1 * x_range, x_max + 0.1 * x_range)
+    # ax.set_ylim(y_min - 0.1 * y_range, y_max + 0.1 * y_range)
+    # ax.set_zlim(z_min - 0.1 * z_range, z_max + 0.1 * z_range)
+
+    # --- 5. 设置坐标轴标签和字体 ---
+    # 使用LaTeX渲染以获得专业效果
+    ax.set_xlabel(r'$p_x$ [m]', fontsize=16)
+    ax.set_ylabel(r'$p_y$ [m]', fontsize=16)
+    ax.set_zlabel(r'$p_z$ [m]', fontsize=16)
+    ax.tick_params(axis='both', which='major', labelsize=8)
+
+    # --- 6. 设置背景板和边框样式 ---
+    # 设置背景板（pane）的颜色和透明度
+    ax.xaxis.pane.fill = True
+    ax.yaxis.pane.fill = True
+    ax.zaxis.pane.fill = True
+    ax.xaxis.pane.set_edgecolor('w')
+    ax.yaxis.pane.set_edgecolor('w')
+    ax.zaxis.pane.set_edgecolor('w')
+    ax.xaxis.pane.set_facecolor((0.9, 0.9, 0.9, 0.8))
+    ax.yaxis.pane.set_facecolor((0.9, 0.9, 0.9, 0.8))
+    ax.zaxis.pane.set_facecolor((0.9, 0.9, 0.9, 0.8))
+
+    # 确保坐标轴边框（spine）可见
+    ax.spines['left'].set_visible(True)
+    ax.spines['right'].set_visible(True)
+    ax.spines['top'].set_visible(True)
+    ax.spines['bottom'].set_visible(True)
+
+    # --- 7. 手动调整视角 ---
+    # (仰角, 方位角) - 这是需要反复尝试以找到最佳角度的关键参数
+    ax.view_init(elev=40, azim=-50)
+
+    # --- 8. 布局和保存 ---
+    plt.subplots_adjust(right=0.95, top=1, bottom=0.0, left=0.0)
     plt.show()
+    # p_traj = traj[:, :3]
+    # fig = plt.figure(figsize=(3.5, 2.9), dpi=600)
+    # ax = fig.add_subplot(111, projection='3d')
+    # # 只绘制轨迹，线宽加粗
+    # ax.plot(p_traj[:, 0], p_traj[:, 1], p_traj[:, 2], label='Trajectory', linewidth=1.0)
+    # plt.tight_layout()
+    # # 不再绘制Keypoints
+    # # 不再设置标题
+    # ax.set_xlabel(r'$p_x$ [m]', fontsize=8)
+    # ax.set_ylabel(r'$p_y$ [m]', fontsize=8)
+    # ax.set_zlabel(r'$p_z$ [m]', fontsize=8)
+    # plt.savefig('trajectory_plot.pdf', bbox_inches='tight')
+    # plt.show()
     # """
     # Plots the generated trajectory of length n with the used keypoints.
     # :param traj: Full generated reference trajectory. Numpy array of shape nx13

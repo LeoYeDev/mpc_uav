@@ -603,6 +603,8 @@ class Quad3DOptimizer:
                         p_values.extend(online_gp_predictions[j, :])
                     else:
                         p_values.extend([0.0, 0.0, 0.0])
+                else:
+                    p_values.extend([0.0, 0.0, 0.0])
             
             # 3. 如果p_values不为空，则设置给求解器
             if p_values:
