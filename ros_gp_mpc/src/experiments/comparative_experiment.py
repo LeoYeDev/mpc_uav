@@ -422,16 +422,13 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     #title = r'$v_{max}$=%.2f m/s | RMSE: %.4f m | %s ' % (max_vel, float(rmse), legends)
     #如果使用AR
     if online_gp_manager and use_online_gp_ject:
-        title = f'AR-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
-    #如果使用SGP
+        title = r'$AR-MPC: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
     elif use_gp_ject is True:
-        title = f'SGP-MPC   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
-    #如果没有GP
+        title = r'$SGP-MPC: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
     elif model_type_perfect:
-        title = f'Perfect   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
+        title = r'$Perfect: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
     else:
-        title = f'Nominal   Max Vel: {max_vel:.2f} m/s   RMSE: {rmse:.4f} m'
-
+        title = r'$Nominal: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
     print(f'\n--- Simulation finished ---\n')
     print(f'Average optimization time: {mean_opt_time:.4f} s')
     print(f'RMSE: {rmse:.4f} m')
@@ -453,13 +450,13 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
         # trajectory_tracking_results(reference_timestamps, reference_traj, quad_trajectory,
         #                             reference_u, u_optimized_seq, title)
 
-        tracking_results_with_wind(
-            t_ref=reference_timestamps,
-            x_ref=reference_traj,
-            x_executed=quad_trajectory,
-            title=title,
-            wind_model=wind_model # <-- 关键改动
-        )
+        # tracking_results_with_wind(
+        #     t_ref=reference_timestamps,
+        #     x_ref=reference_traj,
+        #     x_executed=quad_trajectory,
+        #     title=title,
+        #     wind_model=wind_model # <-- 关键改动
+        # )
     # --- 新增：绘制在线GP结果 ---
     if online_gp_manager and history_gp_input_velocities and history_gp_target_residuals and visualized_all:
         print("\n--- Plotting Online GP Collected Data: Input Velocity vs. Target Residual ---")
@@ -505,17 +502,18 @@ if __name__ == '__main__':
     except RuntimeError:
         # 如果上下文已经设置，可能会抛出此异常，属于正常情况
         pass
+
     # --- 修复结束 ---
     # Trajectory options
     traj_type_vec = [{"random": 1}]
     traj_type_labels = ["Random"]
     
-    # av_speed_vec = [[1.5,2.0,2.5,3.0,3.5],
-    #                 [12.0],
-    #                 [12.0]]
-    av_speed_vec = [[3.0],
+    av_speed_vec = [[1.5,2.0,2.5,3.0,3.5],
                     [12.0],
                     [12.0]]
+    # av_speed_vec = [[3.0],
+    #                 [12.0],
+    #                 [12.0]]
     # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
     # traj_type_labels = ["Random", "Circle", "Lemniscate"]
 
@@ -638,6 +636,8 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print("所有仿真已完成，正在生成最终的论文级跟踪误差对比图...")
     print("="*60)
+
+    #plot_combined_results(combined_plot_data)
 
     # 定义每个控制器的绘图样式
     controller_plot_map = {
