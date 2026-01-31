@@ -20,10 +20,20 @@ class DirectoryConfig:
     """
 
     _dir_path = os.path.dirname(os.path.realpath(__file__))
-    SAVE_DIR = _dir_path + '/../results/model_fitting'
-    RESULTS_DIR = _dir_path + '/../results'
-    CONFIG_DIR = _dir_path + ''
-    DATA_DIR = _dir_path + '/../data'
+    _root_path = os.path.dirname(_dir_path)
+    
+    # New consolidated outputs directory
+    OUTPUTS_DIR = os.path.join(_root_path, 'outputs')
+    MODELS_DIR = os.path.join(OUTPUTS_DIR, 'models')
+    EXPERIMENTS_DIR = os.path.join(OUTPUTS_DIR, 'experiments')
+    FIGURES_DIR = os.path.join(OUTPUTS_DIR, 'figures')
+    ACADOS_CACHE_DIR = os.path.join(OUTPUTS_DIR, 'acados_cache')
+    
+    # Legacy aliases for backwards compatibility
+    SAVE_DIR = MODELS_DIR
+    RESULTS_DIR = OUTPUTS_DIR
+    CONFIG_DIR = _dir_path
+    DATA_DIR = os.path.join(_root_path, 'data')
 
 
 class SimpleSimConfig:
@@ -40,6 +50,9 @@ class SimpleSimConfig:
 
     # Set to True to show the trajectory that will be executed before the execution time
     pre_run_debug_plots = True
+    
+    # Set to False to reduce matplotlib popup windows during simulation
+    show_intermediate_plots = False
 
     # Choice of disturbances modeled in our Simplified Simulator. For more details about the parameters used refer to
     # the script: src/quad_mpc/quad_3d.py.
@@ -57,7 +70,7 @@ class ModelFitConfig:
     """
 
     # ## Dataset loading ## #
-    ds_name = "simplified_sim_dataset"
+    ds_name = "simplified_sim"
     ds_metadata = {
         "noisy": True,
         "drag": True,

@@ -27,7 +27,7 @@ include/
 lib/
 
 # Generated/compiled files
-acados_models/*.json
+outputs/acados_cache/
 c_generated_code/
 *.a
 
@@ -37,10 +37,10 @@ c_generated_code/
 *.swp
 *.swo
 
-# Results and data (optional - uncomment to track)
-# results/
-# experiment_results/
-# data/
+# Outputs (uncomment to ignore)
+# outputs/models/
+# outputs/experiments/
+# outputs/figures/
 
 # Model files
 *.pkl

@@ -325,7 +325,7 @@ if __name__ == '__main__':
                         help="Set to True to enable recording mode.")
     parser.set_defaults(recording=False)
 
-    parser.add_argument("--dataset_name", type=str, default="simplified_sim_dataset",
+    parser.add_argument("--dataset_name", type=str, default="simplified_sim",
                         help="Name for the generated dataset.")
 
     parser.add_argument("--simulation_time", type=float, default=300,

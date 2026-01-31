@@ -486,6 +486,7 @@ def draw_drone_simulation(art_pack, x_trajectory, quad, targets, targets_reached
 
     # fill in the axes rectangle
     fig.canvas.blit(ax.bbox)
+    plt.pause(0.001)  # Flush display buffer for animation update
     
     
 def trajectory_tracking_results(t_ref, x_ref, x_executed, u_ref, u_executed, title, w_control=None, legend_labels=None,

@@ -42,8 +42,8 @@ $HOME/acados/bin/       # t_renderer
 
 | 模型 | 路径 |
 |------|------|
-| 离线GP | `results/model_fitting/89954f3/simple_sim_gp/` |
-| 训练数据 | `data/simplified_sim_dataset/train/dataset_001.csv` |
+| 离线GP | `outputs/models/89954f3/simple_sim_gp/` |
+| 训练数据 | `data/simplified_sim/train/dataset_001.csv` |
 
 ---
 

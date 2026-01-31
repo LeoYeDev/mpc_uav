@@ -1,5 +1,5 @@
 {
-    "simplified_sim_dataset": {
+    "simplified_sim": {
         "train": {
             "dataset_001": {
                 "noisy": true,
@@ -9,7 +9,7 @@
             }
         }
     },
-    "gazebo_dataset": {
+    "gazebo": {
         "train": {
             "dataset_001": {
                 "gazebo": "default"

@@ -133,7 +133,10 @@ class RealisticWindModel:
         # 保存图像
         plt.savefig("wind_velocity_visualization.pdf", bbox_inches="tight")
         plt.savefig("wind_velocity_visualization.svg", bbox_inches="tight")
-        plt.show()
+        if SimpleSimConfig.show_intermediate_plots:
+            plt.show()
+        else:
+            plt.close()
     
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
                           t_horizon=1.0, q_diagonal=None, r_diagonal=None, q_mask=None,
@@ -499,7 +502,10 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
             ax.grid(True)
         
         plt.savefig("online_gp_collected_data.pdf", bbox_inches="tight")
-        plt.show() # 将show调用移到main函数末尾，以显示所有图
+        if SimpleSimConfig.show_intermediate_plots:
+            plt.show()
+        else:
+            plt.close()
     # --- 在线GP绘图结束 ---
     # --- 修改 1: 增加函数返回值，用于后续保存 ---
     return rmse, max_vel, mean_opt_time, reference_timestamps, reference_traj, quad_trajectory
