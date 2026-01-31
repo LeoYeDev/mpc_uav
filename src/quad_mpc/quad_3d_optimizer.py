@@ -143,7 +143,12 @@ class Quad3DOptimizer:
         self.quad_xdot = {}
         for dyn_model_idx in nominal_with_gp.keys():
             dyn = nominal_with_gp[dyn_model_idx]
-            self.quad_xdot[dyn_model_idx] = cs.Function('x_dot', [self.x, self.u], [dyn], ['x', 'u'], ['x_dot'])
+            # When GP models are loaded, the dynamics contain GP-related symbols that need to be
+            # included as inputs. For simplicity, use allow_free=True to avoid errors when
+            # these functions are not actually used for direct evaluation.
+            opts = {'allow_free': True} if self.gp_reg_ensemble is not None else {}
+            self.quad_xdot[dyn_model_idx] = cs.Function('x_dot', [self.x, self.u], [dyn], 
+                                                         ['x', 'u'], ['x_dot'], opts)
 
         # ### Setup and compile Acados OCP solvers ### #
         self.acados_ocp_solver = {}
@@ -173,8 +178,9 @@ class Quad3DOptimizer:
 
             # Create OCP object to formulate the optimization
             ocp = AcadosOcp()
-            ocp.acados_include_path = acados_source_path + '/include'
-            ocp.acados_lib_path = acados_source_path + '/lib'
+            # Note: acados_include_path and acados_lib_path are no longer needed
+            # in newer versions of acados_template (>= 0.4.0), they are automatically
+            # configured from ACADOS_SOURCE_DIR environment variable
             ocp.model = key_model
             ocp.dims.N = self.N
             ocp.solver_options.tf = t_horizon

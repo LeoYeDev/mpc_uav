@@ -16,15 +16,19 @@ venv/
 mpc_venv/
 ENV/
 
-# ACADOS (install separately)
+# ACADOS (install separately, use $HOME/acados)
 acados/
+acados_old_backup/
 src/acados-template/
+
+# Bundled ACADOS files (removed - use system ACADOS)
+cmake/
+include/
+lib/
 
 # Generated/compiled files
 acados_models/*.json
 c_generated_code/
-include/
-lib/
 *.a
 
 # IDE

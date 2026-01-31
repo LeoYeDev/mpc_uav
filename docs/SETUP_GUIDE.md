@@ -1,209 +1,88 @@
 # MPC-UAV 环境配置指南
 
-本指南详细介绍如何从零开始配置 MPC-UAV 项目的运行环境。
-
-## 系统要求
-
-- **操作系统**: Ubuntu 20.04+ (推荐)
-- **Python**: 3.8+
-- **编译工具**: GCC, CMake, Git
-
----
-
-## 1. 系统依赖安装
+## 快速开始
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-    gcc g++ cmake git \
-    gnuplot doxygen graphviz \
-    libgoogle-glog-dev liblapacke-dev \
-    python3-pip python3-venv
+conda activate mpc_uav
+python src/experiments/comparative_experiment.py
 ```
 
 ---
 
-## 2. Python 虚拟环境
+## 环境配置（已完成）
 
-```bash
-# 安装 virtualenv
-pip3 install virtualenv
+### Conda 环境 `mpc_uav`
 
-# 创建虚拟环境
-cd ~
-virtualenv mpc_venv --python=python3.8
+| 包 | 版本 |
+|----|------|
+| Python | 3.8 |
+| casadi | 3.7.2 |
+| torch | 2.4.1 (CPU/CUDA) |
+| gpytorch | 1.13 |
+| acados_template | 0.5.1 |
 
-# 激活虚拟环境
-source ~/mpc_venv/bin/activate
+### ACADOS 安装位置
+
+```
+$HOME/acados/           # 主程序
+$HOME/acados/lib/       # 库文件
+$HOME/acados/bin/       # t_renderer
 ```
 
-> 💡 每次使用项目前需要激活虚拟环境: `source ~/mpc_venv/bin/activate`
+### 环境变量（自动配置）
+
+激活conda环境时自动设置:
+- `LD_LIBRARY_PATH` → `$HOME/acados/lib`
+- `ACADOS_SOURCE_DIR` → `$HOME/acados`
+- `PYTHONPATH` → `/home/jackie/mpc_uav`
 
 ---
 
-## 3. ACADOS 安装
+## GP 模型
 
-ACADOS 是项目使用的非线性 MPC 求解器。
-
-### 3.1 下载并编译
-
-```bash
-# 克隆仓库
-cd ~
-git clone https://github.com/acados/acados.git
-cd acados
-
-# 初始化子模块
-git submodule update --recursive --init
-
-# 编译
-mkdir -p build && cd build
-cmake -DACADOS_WITH_QPOASES=ON ..
-make install -j$(nproc)
-```
-
-### 3.2 安装 Python 接口
-
-```bash
-# 确保虚拟环境已激活
-source ~/mpc_venv/bin/activate
-
-# 安装 Python 接口
-pip install -e ~/acados/interfaces/acados_template
-```
-
-### 3.3 配置环境变量
-
-添加到 `~/.bashrc`:
-
-```bash
-# ACADOS
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:"$HOME/acados/lib"
-export ACADOS_SOURCE_DIR="$HOME/acados"
-```
-
-使配置生效:
-```bash
-source ~/.bashrc
-```
-
-### 3.4 安装 Tera Renderer (如需要)
-
-首次运行时如果提示需要 Tera Renderer:
-
-```bash
-# 下载
-wget https://github.com/acados/tera_renderer/releases/download/v0.0.34/t_renderer-v0.0.34-linux \
-    -O ~/acados/bin/t_renderer
-
-# 添加执行权限
-chmod +x ~/acados/bin/t_renderer
-```
-
-### 3.5 验证 ACADOS 安装
-
-```bash
-source ~/mpc_venv/bin/activate
-cd ~/acados/examples/acados_python/getting_started/
-python minimal_example_ocp.py
-```
-
-成功后会显示求解结果图表。
+| 模型 | 路径 |
+|------|------|
+| 离线GP | `results/model_fitting/89954f3/simple_sim_gp/` |
+| 训练数据 | `data/simplified_sim_dataset/train/dataset_001.csv` |
 
 ---
 
-## 4. 项目配置
-
-### 4.1 安装项目依赖
+## 常用命令
 
 ```bash
-source ~/mpc_venv/bin/activate
-cd /path/to/mpc_uav
+# 对比实验（AR-MPC vs Nominal vs SGP-MPC）
+python src/experiments/comparative_experiment.py
 
-pip install -r requirements.txt
-```
-
-### 4.2 设置 PYTHONPATH
-
-```bash
-# 临时设置
-export PYTHONPATH=$PYTHONPATH:$(pwd)
-
-# 或添加到 ~/.bashrc (永久)
-echo 'export PYTHONPATH=$PYTHONPATH:/path/to/mpc_uav' >> ~/.bashrc
-```
-
----
-
-## 5. 验证安装
-
-### 5.1 核心导入测试
-
-```bash
-python -c "
-from src.quad_mpc.quad_3d import Quadrotor3D
-from src.quad_mpc.quad_3d_mpc import Quad3DMPC
-from src.quad_mpc.quad_3d_optimizer import Quad3DOptimizer
-print('✓ 核心模块导入成功!')
-"
-```
-
-### 5.2 轨迹跟踪测试
-
-```bash
+# 简单轨迹测试
 python src/experiments/trajectory_test.py
-```
 
-预期输出:
-```
-:::::::::::::: SIMULATION SETUP ::::::::::::::
+# 收集新数据
+python src/experiments/point_tracking_and_record.py
 
-Simulation: Applied disturbances: 
-{"noisy": true, "drag": true, "payload": false, "motor_noise": true}
-
-Model: No regression model loaded
-
-Reference: Executed trajectory `loop` with a peak axial velocity of 8 m/s
-
-::::::::::::: SIMULATION RESULTS :::::::::::::
-
-Mean optimization time: 1.x ms
-Tracking RMSE: 0.2xxx m
-```
-
-### 5.3 GP 模块测试
-
-```bash
-python -m src.model_fitting.test_gp
+# 训练GP模型
+python src/model_fitting/gp_fitting.py
 ```
 
 ---
 
-## 常见问题
+## 故障排查
 
-### ACADOS 找不到库文件
-
-确保环境变量已设置:
+### ACADOS 库找不到
 ```bash
-echo $LD_LIBRARY_PATH
-echo $ACADOS_SOURCE_DIR
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/acados/lib
 ```
 
-### CasADi 版本冲突
-
-使用指定版本:
+### 模块导入错误
 ```bash
-pip install casadi==3.5.1
+export PYTHONPATH=$PYTHONPATH:/home/jackie/mpc_uav
 ```
 
-### 导入错误: No module named 'src'
-
-确保 PYTHONPATH 已正确设置并在项目根目录运行。
+### 字体警告
+非关键警告，可忽略或安装 Microsoft 字体
 
 ---
 
-## 参考资料
+## 参考
 
-- [ACADOS 官方文档](https://docs.acados.org/)
-- [原始项目 LeoYeDev/data_driven_mpc](https://github.com/LeoYeDev/data_driven_mpc)
-- [论文: Data-Driven MPC for Quadrotors](https://ieeexplore.ieee.org/document/9361343)
+- [ACADOS 文档](https://docs.acados.org/)
+- [原始项目](https://github.com/LeoYeDev/data_driven_mpc)

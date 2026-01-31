@@ -192,7 +192,9 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
         pre_trained_models = rdrv_d = None
 
     if quad_name is None:
-        quad_name = "my_quad_" + 'sim'
+        # Add unique suffix based on online GP usage to avoid ACADOS solver cache conflicts
+        suffix = "_ar" if use_online_gp else "_sgp" if version is not None else "_nom"
+        quad_name = "my_quad_sim" + suffix
 
     # Initialize quad MPC
     quad_mpc = Quad3DMPC(my_quad, t_horizon=t_horizon, optimization_dt=node_dt, simulation_dt=simulation_dt,
@@ -578,8 +580,8 @@ if __name__ == '__main__':
             print("="*50)
             online_gp_config = {
             'num_dimensions': 3,
-            'main_process_device': 'cuda',
-            'worker_device_str': 'cuda',
+            'main_process_device': 'cpu',  # Use CPU to avoid CUDA multiprocessing issues
+            'worker_device_str': 'cpu',    # Worker must use CPU for multiprocessing compatibility
             'buffer_level_capacities': [5, 10, 6], # 三层缓冲区容量
             'buffer_level_sparsity': [2, 4, 6],      # 稀疏因子：每1/2/5个点存入
             'min_points_for_initial_train': 15,      # 触发首次训练的最小数据点
