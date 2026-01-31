@@ -1,0 +1,26 @@
+# MPC-UAV Core Dependencies
+# Based on LeoYeDev/data_driven_mpc with improvements
+
+# Optimization and Numerical Computing
+casadi>=3.5.1
+numpy>=1.19.0
+scipy>=1.5.0
+
+# Machine Learning
+torch>=1.13.0
+gpytorch>=1.9.1
+scikit-learn>=0.23.2
+
+# Data Processing and Visualization
+matplotlib>=3.2.2
+pandas>=1.0.5
+tikzplotlib>=0.9.4
+
+# Utilities
+pyquaternion>=0.9.5
+PyYAML>=5.3.1
+joblib>=0.15.1
+tqdm>=4.46.1
+
+# ACADOS (install separately, see docs/SETUP_GUIDE.md)
+# pip install -e ~/acados/interfaces/acados_template

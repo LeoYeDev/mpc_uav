@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+mpc_venv/
+ENV/
+
+# ACADOS (install separately)
+acados/
+src/acados-template/
+
+# Generated/compiled files
+acados_models/*.json
+c_generated_code/
+include/
+lib/
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Results and data (optional - uncomment to track)
+# results/
+# experiment_results/
+# data/
+
+# Model files
+*.pkl
+*.pt
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# ROS messages (legacy)
+msg/
+
+# PDF/images in src (generated figures)
+src/**/*.pdf
+src/**/*.svg
+src/**/*.TIFF
+
+# Test outputs
+test_*.pdf
+
