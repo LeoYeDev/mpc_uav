@@ -6,7 +6,7 @@ def draw_poly(traj, u_traj, t, target_points=None, target_t=None):
     p_traj = traj[:, :3]
     fig = plt.figure(figsize=(7, 5))
     ax = fig.add_subplot(111, projection='3d')
-    plt.rc('font', family='Times New Roman')
+    plt.rc('font', family='serif')
     
     # 绘制轨迹
     ax.plot(p_traj[:, 0], p_traj[:, 1], p_traj[:, 2], 

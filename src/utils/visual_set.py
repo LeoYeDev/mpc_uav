@@ -21,7 +21,8 @@ def set_publication_style(base_size=9):
         plt.rcParams.update({
             # 基础设置保持不变
             'font.size': base_size,
-            'font.family': 'Times New Roman',
+            'font.family': 'serif',
+            'font.serif': ['DejaVu Serif', 'Times New Roman', 'Liberation Serif'],
             'mathtext.fontset': 'stix',
 
             # 关键调整：坐标轴和刻度线变细

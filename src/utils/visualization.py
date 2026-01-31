@@ -303,12 +303,9 @@ def visualize_gp_inference(x_data, u_data, y_data, gp_ensemble, vis_features_x, 
 
 def initialize_drone_plotter(world_rad, quad_rad, n_props, full_traj=None):
 
-    fig = plt.figure(figsize=(10, 10), dpi=96)
-    fig.show()
-
-    mng = plt.get_current_fig_manager()
-    mng.resize(*mng.window.maxsize())
-
+    # Use reasonable window size instead of fullscreen
+    fig = plt.figure(figsize=(8, 8), dpi=100)
+    
     ax = fig.add_subplot(111, projection='3d')
 
     if full_traj is not None:
@@ -324,57 +321,41 @@ def initialize_drone_plotter(world_rad, quad_rad, n_props, full_traj=None):
     ax.set_xlabel('x [m]')
     ax.set_ylabel('y [m]')
     ax.set_zlabel('z [m]')
+    
+    fig.tight_layout()
     fig.canvas.draw()
-    plt.draw()
+    fig.show()
 
-    # cache the background
-    background = fig.canvas.copy_from_bbox(ax.bbox)
-
-    # artists = {
-    #     "trajectory": ax.plot([], [])[0], "drone": ax.plot([], [], 'o-')[0],
-    #     "drone_x": ax.plot([], [], 'o-', color='r')[0],
-    #     "missing_targets": ax.plot([], [], [], color='r', marker='o', linestyle='None', markersize=12)[0],
-    #     "reached_targets": ax.plot([], [], [], color='g', marker='o', linestyle='None', markersize=12)[0],
-    #     "sim_trajectory": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.9 - i * 0.2 / n_props)[0]
-    #                        for i in range(n_props)],
-    #     "int_trajectory": [ax.plot([], [], [], '-', color='tab:orange', alpha=0.9 - i * 0.5 / n_props)[0]
-    #                        for i in range(n_props + 1)],
-    #     "prop_trajectory": [ax.plot([], [], [], '-', color='tab:red', alpha=0.9 - i * 0.2 / n_props)[0]
-    #                         for i in range(n_props)],
-    #     "prop_covariance": [ax.plot([], [], [], color='r', alpha=0.5 - i * 0.45 / n_props)[0]
-    #                         for i in range(n_props)],
-    #     "projection_lines": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0],
-    #                          ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0]],
-    #     "projection_target": [ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0],
-    #                           ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0]]}
+    # Cache the FULL FIGURE background (not just axes) to avoid ghost images
+    background = fig.canvas.copy_from_bbox(fig.bbox)
 
     artists = {
         # 实际轨迹: 使用沉稳的深蓝色，作为画面的基准
-        "trajectory": ax.plot([], [], color='tab:blue', linewidth=2.0)[0], 
+        "trajectory": ax.plot([], [], color='tab:blue', linewidth=2.0, animated=True)[0], 
         # 无人机模型:
-        "drone": ax.plot([], [], 'o-', color='orange', linewidth=1.5)[0], # 主体
-        "drone_x": ax.plot([], [], 'o-', color='tab:orange', linewidth=1.5)[0], # 前向电机/机臂
+        "drone": ax.plot([], [], 'o-', color='orange', linewidth=1.5, animated=True)[0], # 主体
+        "drone_x": ax.plot([], [], 'o-', color='tab:orange', linewidth=1.5, animated=True)[0], # 前向电机/机臂
         # 预先设定轨迹:
-        "sim_trajectory": [ax.plot([], [], [], '-', color='tab:green', alpha=0.9 - i * 0.2 / n_props)[0]
+        "sim_trajectory": [ax.plot([], [], [], '-', color='tab:green', alpha=0.9 - i * 0.2 / n_props, animated=True)[0]
                            for i in range(n_props)],
         # 中间轨迹: 使用橙色，颜色比实际轨迹更淡
-        "int_trajectory": [ax.plot([], [], [], '-', color='tab:orange', alpha=0.9 - i * 0.5 / n_props)[0]
+        "int_trajectory": [ax.plot([], [], [], '-', color='tab:orange', alpha=0.9 - i * 0.5 / n_props, animated=True)[0]
                            for i in range(n_props + 1)],
         # 预测轨迹:
-        "prop_trajectory": [ax.plot([], [], [], '-', color='tab:red', alpha=0.9 - i * 0.2 / n_props, linewidth=2.0)[0]
+        "prop_trajectory": [ax.plot([], [], [], '-', color='tab:red', alpha=0.9 - i * 0.2 / n_props, linewidth=2.0, animated=True)[0]
                             for i in range(n_props)],
-        "prop_covariance": [ax.plot([], [], [], color='r', alpha=0.5 - i * 0.45 / n_props)[0]
+        "prop_covariance": [ax.plot([], [], [], color='r', alpha=0.5 - i * 0.45 / n_props, animated=True)[0]
                             for i in range(n_props)],
         # 目标点:
         # 未达目标点使用警示性的红色，但色调更柔和
-        "missing_targets": ax.plot([], [], [], color='tab:red', marker='x', linestyle='None', markersize=12)[0],
+        "missing_targets": ax.plot([], [], [], color='tab:red', marker='x', linestyle='None', markersize=12, animated=True)[0],
         # 已达目标点使用清晰的绿色
-        "reached_targets": ax.plot([], [], [], color='tab:green', marker='o', linestyle='None', markersize=12)[0],
+        "reached_targets": ax.plot([], [], [], color='tab:green', marker='o', linestyle='None', markersize=12, animated=True)[0],
 
-        "projection_lines": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0],
-                             ax.plot([], [], [], '-', color='tab:blue', alpha=0.2)[0]],
-        "projection_target": [ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0],
-                              ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2)[0]]
+        "projection_lines": [ax.plot([], [], [], '-', color='tab:blue', alpha=0.2, animated=True)[0],
+                             ax.plot([], [], [], '-', color='tab:blue', alpha=0.2, animated=True)[0]],
+        "projection_target": [ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2, animated=True)[0],
+                              ax.plot([], [], [], marker='o', color='r', linestyle='None', alpha=0.2, animated=True)[0]]
     }
     
     art_pack = fig, ax, artists, background, world_rad
@@ -484,8 +465,8 @@ def draw_drone_simulation(art_pack, x_trajectory, quad, targets, targets_reached
         ax.set_ylim([x_trajectory[-1, 1] - world_rad, x_trajectory[-1, 1] + world_rad])
         ax.set_zlim([x_trajectory[-1, 2] - world_rad, x_trajectory[-1, 2] + world_rad])
 
-    # fill in the axes rectangle
-    fig.canvas.blit(ax.bbox)
+    # fill in the FULL FIGURE rectangle (not just axes) to prevent ghost images
+    fig.canvas.blit(fig.bbox)
     plt.pause(0.001)  # Flush display buffer for animation update
     
     

@@ -65,3 +65,4 @@ src/**/*.TIFF
 # Test outputs
 test_*.pdf
 
+acados_models/
