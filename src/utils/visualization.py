@@ -322,7 +322,8 @@ def initialize_drone_plotter(world_rad, quad_rad, n_props, full_traj=None):
     ax.set_ylabel('y [m]')
     ax.set_zlabel('z [m]')
     
-    fig.tight_layout()
+    # Adjust margins so all axis labels are visible (especially z-axis)
+    fig.subplots_adjust(left=0.05, right=0.85, top=0.95, bottom=0.05)
     fig.canvas.draw()
     fig.show()
 
@@ -600,8 +601,9 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
         fig_rmse.tight_layout()
 
     # 调整布局并保存图像
-    plt.savefig("mse_tracking_experiment_plot.pdf", bbox_inches='tight')
-    plt.savefig("mse_tracking_experiment_plot.svg", bbox_inches='tight')
+    fig_path = os.path.join(PathConfig.FIGURES_DIR, 'mse_tracking_experiment_plot')
+    plt.savefig(fig_path + '.pdf', bbox_inches='tight')
+    plt.savefig(fig_path + '.svg', bbox_inches='tight')
     plt.show()
 
     # --- 修复第二个图 (t_opt) 的绘图和图例逻辑 ---
@@ -626,8 +628,9 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
         ax_time.legend(loc='upper right', frameon=True)
         fig_time.tight_layout()
 
-        plt.savefig("t_opt_tracking_experiment_plot.pdf", bbox_inches='tight')
-        plt.savefig("t_opt_tracking_experiment_plot.svg", bbox_inches='tight')
+        fig_path = os.path.join(PathConfig.FIGURES_DIR, 't_opt_tracking_experiment_plot')
+        plt.savefig(fig_path + '.pdf', bbox_inches='tight')
+        plt.savefig(fig_path + '.svg', bbox_inches='tight')
         plt.show()
 
 def load_past_experiments():

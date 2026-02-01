@@ -14,8 +14,9 @@ import time
 import argparse
 import numpy as np
 import torch 
+import os
 
-from config.configuration_parameters import SimpleSimConfig
+from config.configuration_parameters import SimpleSimConfig, DirectoryConfig
 from src.quad_mpc.quad_3d_mpc import Quad3DMPC
 from src.quad_mpc.quad_3d import Quadrotor3D
 from src.utils.quad_3d_opt_utils import get_reference_chunk
@@ -131,8 +132,9 @@ class RealisticWindModel:
         fig.tight_layout()
 
         # 保存图像
-        plt.savefig("wind_velocity_visualization.pdf", bbox_inches="tight")
-        plt.savefig("wind_velocity_visualization.svg", bbox_inches="tight")
+        fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'wind_velocity_visualization')
+        plt.savefig(fig_path + '.pdf', bbox_inches="tight")
+        plt.savefig(fig_path + '.svg', bbox_inches="tight")
         if SimpleSimConfig.show_intermediate_plots:
             plt.show()
         else:

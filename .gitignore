@@ -29,6 +29,7 @@ lib/
 # Generated/compiled files
 outputs/acados_cache/
 c_generated_code/
+src/quad_mpc/c_generated_code/
 *.a
 
 # IDE
