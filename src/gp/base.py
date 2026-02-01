@@ -19,10 +19,7 @@ from config.gp_config import GPModelParams
 from typing import Union
 
 from tqdm import tqdm
-from operator import itemgetter
-from numpy.linalg import inv, cholesky, lstsq
-from numpy.random import mtrand
-from scipy.optimize import minimize
+from numpy.linalg import inv
 from scipy.spatial.distance import pdist, cdist, squareform
 
 from src.utils.utils import safe_mknode_recursive, make_bz_matrix
@@ -282,99 +279,6 @@ class CustomGPRegression:
     def y_train(self, k):
         self._y_train = k
         self._y_train_cs = cs.DM(k)
-
-    def log_marginal_likelihood(self, theta):
-
-        l_params = np.exp(theta[:-1])
-        sigma_f = np.exp(theta[-1])
-        sigma_n = self.sigma_n
-
-        kernel = CustomKernelFunctions(self.kernel_type, params={'l': l_params, 'sigma_f': sigma_f})
-        k_train = kernel(self.x_train, self.x_train) + sigma_n ** 2 * np.eye(len(self.x_train))
-        l_mat = cholesky(k_train)
-        nll = np.sum(np.log(np.diagonal(l_mat))) + \
-            0.5 * self.y_train.T.dot(lstsq(l_mat.T, lstsq(l_mat, self.y_train, rcond=None)[0], rcond=None)[0]) + \
-            0.5 * len(self.x_train) * np.log(2 * np.pi)
-        return nll
-
-    def _nll(self, x_train, y_train):
-        """
-        Returns a numerically stable function implementation of the negative log likelihood using the cholesky
-        decomposition of the kernel matrix. http://www.gaussianprocess.org/gpml/chapters/RW2.pdf, Section 2.2,
-        Algorithm 2.1.
-        :param x_train: Array of m points (m x d).
-        :param y_train: Array of m points (m x 1)
-        :return: negative log likelihood (scalar) computing function
-        """
-
-        def nll_func(theta):
-
-            l_params = np.exp(theta[:-2])
-            sigma_f = np.exp(theta[-2])
-            sigma_n = np.exp(theta[-1])
-
-            kernel = CustomKernelFunctions(self.kernel_type, params={'l': l_params, 'sigma_f': sigma_f})
-            k_train = kernel(x_train, x_train) + sigma_n ** 2 * np.eye(len(x_train))
-            l_mat = cholesky(k_train)
-            nll = np.sum(np.log(np.diagonal(l_mat))) + \
-                0.5 * y_train.T.dot(lstsq(l_mat.T, lstsq(l_mat, y_train, rcond=None)[0], rcond=None)[0]) + \
-                0.5 * len(x_train) * np.log(2 * np.pi)
-            return nll
-
-        return nll_func
-
-    def _constrained_minimization(self, x_train, y_train, x_0, bounds):
-        try:
-            res = minimize(self._nll(x_train, y_train), x0=x_0, bounds=bounds, method='L-BFGS-B')
-            return np.exp(res.x), res.fun
-        except np.linalg.LinAlgError:
-            return x_0, np.inf
-
-    def fit(self, x_train, y_train):
-        """
-        Fit a GP regressor to the training dataset by minimizing the negative log likelihood of the training data
-
-        :param x_train: Array of m points (m x d).
-        :param y_train: Array of m points (m x 1)
-        """
-
-        initial_guess = self.kernel.get_trainable_parameters()
-        initial_guess += [self.sigma_n]
-        initial_guess = np.array(initial_guess)
-
-        bounds = [(1e-5, 1e1) for _ in range(len(initial_guess) - 1)]
-        bounds = bounds + [(1e-8, 1e0)]
-        log_bounds = np.log(tuple(bounds))
-
-        y_train -= self.y_mean
-
-        optima = [self._constrained_minimization(x_train, y_train, initial_guess, log_bounds)]
-
-        if self.n_restarts > 1:
-            random_state = mtrand._rand
-            for iteration in range(self.n_restarts - 1):
-                theta_initial = random_state.uniform(log_bounds[:, 0], log_bounds[:, 1])
-                optima.append(self._constrained_minimization(x_train, y_train, theta_initial, log_bounds))
-
-        lml_values = list(map(itemgetter(1), optima))
-        theta_opt = optima[int(np.argmin(lml_values))][0]
-
-        # Update kernel with new parameters
-        l_new = theta_opt[:-2]
-        sigma_f_new = theta_opt[-2]
-        self.sigma_n = theta_opt[-1]
-        self.kernel = CustomKernelFunctions(self.kernel_type, params={'l': l_new, 'sigma_f': sigma_f_new})
-
-        # Pre-compute kernel matrices
-        self.K = self.kernel(x_train, x_train) + self.sigma_n ** 2 * np.eye(len(x_train))
-        self.K_inv = inv(self.K)
-        self.K_inv_y = self.K_inv.dot(y_train)
-
-        # Update training dataset points
-        self.x_train = x_train
-        self.y_train = y_train
-
-        self.compute_gp_jac()
 
     def compute_gp_jac(self):
 

@@ -107,10 +107,10 @@ python src/experiments/trajectory_test.py --trajectory lemniscate --v_max 6
 # 1. 数据采集
 python src/experiments/point_tracking_and_record.py --recording --dataset_name my_dataset --simulation_time 300
 
-# 2. 训练 GP 模型
-python src/model_fitting/gp_fitting.py --n_points 20 --model_name my_gp --x 7 --y 7
-python src/model_fitting/gp_fitting.py --n_points 20 --model_name my_gp --x 8 --y 8
-python src/model_fitting/gp_fitting.py --n_points 20 --model_name my_gp --x 9 --y 9
+# 2. 训练 GP 模型 (使用 PyTorch)
+python src/gp/offline.py --n_points 20 --model_name my_gp --x 7 --y 7
+python src/gp/offline.py --n_points 20 --model_name my_gp --x 8 --y 8
+python src/gp/offline.py --n_points 20 --model_name my_gp --x 9 --y 9
 ```
 
 ### 模型对比实验
