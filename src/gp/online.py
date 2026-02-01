@@ -38,8 +38,8 @@ class ExactGPModel(gpytorch.models.ExactGP):
     我们使用一个常量均值函数和一个带有缩放核的Matern核函数。
     Matern核通常在物理系统中比RBF核表现得更稳定。
 
-    A standard Exact GP model, using a Matern kernel which is often more stable
-    for physical systems than an RBF kernel.
+    A standard Exact GP model, using an RBF kernel (Squared Exponential) to match
+    the CasADi implementation in base.py.
     """
     def __init__(self, train_x, train_y, likelihood, ard_num_dims=1):
         # 初始化父类
@@ -48,7 +48,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
         self.mean_module = gpytorch.means.ConstantMean()
         # 定义协方差函数（核函数）
         self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.MaternKernel(nu=2.5, ard_num_dims=ard_num_dims)
+            gpytorch.kernels.RBFKernel(ard_num_dims=ard_num_dims)
         )
     
     # 定义模型的前向传播
@@ -308,11 +308,13 @@ class IncrementalGP:
         length_scale = self.model.covar_module.base_kernel.lengthscale.cpu().detach().view(-1).numpy().tolist()
         output_scale = self.model.covar_module.outputscale.cpu().detach().item()
         noise = self.likelihood.noise.cpu().detach().item()
+        mean_val = self.model.mean_module.constant.cpu().detach().item()
 
         return GPModelParams(
             length_scale=length_scale,
             signal_variance=output_scale,
-            noise_variance=noise
+            noise_variance=noise,
+            mean=mean_val
         )
 
     def load_new_state_from_worker(self, new_state_dict, history):

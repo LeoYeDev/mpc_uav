@@ -39,6 +39,7 @@ class TestIncrementalGP(unittest.TestCase):
         self.assertAlmostEqual(params.signal_variance, 2.0, places=4)
         self.assertAlmostEqual(params.noise_variance, 0.1, places=4)
         self.assertIsInstance(params.length_scale, list)
+        self.assertIsInstance(params.mean, float)
 
 if __name__ == '__main__':
     unittest.main()

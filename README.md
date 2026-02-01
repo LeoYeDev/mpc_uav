@@ -23,7 +23,7 @@
 
 ### 1. 环境配置
 
-详细配置步骤请参考 [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)。
+详细配置步骤请参考 [docs/SETUP_GUIDE.md](docs/setup.md)。
 
 ```bash
 # 创建虚拟环境
@@ -67,7 +67,8 @@ mpc_uav/
 │   │   ├── base.py             # GP 基础实现 (GPEnsemble)
 │   │   ├── utils.py            # GP 工具函数 (GPDataset)
 │   │   ├── offline.py          # 离线 GP 训练
-│   │   └── online.py           # 在线增量学习
+│   │   ├── online.py           # 在线增量学习
+│   │   └── train_utils.py      # GP 训练工具 (PyTorch/CasADi 桥接)
 │   ├── experiments/       # 实验脚本
 │   │   ├── trajectory_test.py
 │   │   └── comparative_experiment.py

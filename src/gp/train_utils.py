@@ -77,11 +77,13 @@ def extract_gp_params(model: ExactGPModel, likelihood: gpytorch.likelihoods.Gaus
     length_scale = model.covar_module.base_kernel.lengthscale.cpu().detach().view(-1).numpy().tolist()
     output_scale = model.covar_module.outputscale.cpu().detach().item()
     noise = likelihood.noise.cpu().detach().item()
+    mean_val = model.mean_module.constant.cpu().detach().item()
     
     return GPModelParams(
         length_scale=length_scale,
         signal_variance=output_scale,
-        noise_variance=noise
+        noise_variance=noise,
+        mean=mean_val
     )
 
 def compute_matrices_for_casadi(
@@ -108,8 +110,10 @@ def compute_matrices_for_casadi(
     # Using cholesky for stability: K = L L^T
     try:
         L = np.linalg.cholesky(K_noise)
-        # alpha = K^-1 y  =>  L L^T alpha = y  => L z = y, L^T alpha = z
-        z = np.linalg.solve(L, train_y)
+        # alpha = K^-1 (y - mean)
+        # We model residuals y_res = y - mean using the Zero-Mean GP
+        y_res = train_y - params.mean
+        z = np.linalg.solve(L, y_res)
         k_inv_y = np.linalg.solve(L.T, z) # This is alpha
         
         # K_inv calculation (expensive but needed for CasADi implementation of variance)
@@ -121,7 +125,8 @@ def compute_matrices_for_casadi(
          # Fallback to pseudo-inverse if unstable
         print("Warning: Cholesky failed, using pinv for GP matrices.")
         k_inv = np.linalg.pinv(K_noise)
-        k_inv_y = k_inv @ train_y
+        y_res = train_y - params.mean
+        k_inv_y = k_inv @ y_res
 
     return {
         'k_inv': k_inv,
@@ -134,7 +139,8 @@ def compute_matrices_for_casadi(
             'sigma_f': np.sqrt(params.signal_variance)
         },
         'sigma_n': params.noise_variance,
+        'sigma_n': params.noise_variance,
         # Default means (assuming 0 prior mean for simple GP)
         'mean': np.zeros(train_x.shape[1]), 
-        'y_mean': 0.0
+        'y_mean': params.mean
     }
