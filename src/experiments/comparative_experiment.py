@@ -11,134 +11,28 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
 import time
-import argparse
 import numpy as np
-import torch 
-import os
+import matplotlib.pyplot as plt
 
-from config.configuration_parameters import SimpleSimConfig, DirectoryConfig
+from config.configuration_parameters import SimpleSimConfig
+from config.gp_config import OnlineGPConfig
 from src.core.controller import Quad3DMPC
 from src.core.dynamics import Quadrotor3D
 from src.utils.quad_3d_opt_utils import get_reference_chunk
 from src.utils.utils import load_pickled_models, interpol_mse, separate_variables
-from src.visualization.plotting import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
-    get_experiment_files, mse_tracking_experiment_plot
-from src.visualization.paper_plots import plot_combined_results, plot_tracking_error_comparison, tracking_results_with_wind
-from src.visualization.style import set_publication_style
+from src.utils.wind_model import RealisticWindModel
 from src.utils.trajectories import random_trajectory, lemniscate_trajectory, loop_trajectory
+from src.visualization.plotting import (
+    initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results,
+    get_experiment_files, mse_tracking_experiment_plot
+)
+from src.visualization.paper_plots import plot_tracking_error_comparison
+from src.visualization.gp_online import visualize_gp_snapshot
 from src.gp.rdrv import load_rdrv
 from src.gp.utils import world_to_body_velocity_mapping
-
-global model_num
-
-######
-from src.gp.online import *
-import matplotlib.pyplot as plt
 from src.gp.online import IncrementalGPManager
-from src.visualization.gp_online import visualize_gp_snapshot
-######
 
-# ==============================================================================
-# 1. 定义一个更真实的、基于相对速度的风场模型 (简化版)
-# ==============================================================================
-class RealisticWindModel:
-    """
-    一个更符合物理现实的风场模型，基于多正弦波叠加。
-    它模拟了一个缓慢变化的主风场，并叠加了多个频率和振幅不同的阵风分量。
-    """
-    def __init__(self):
-        """
-        定义风场模型的参数。
-        - base_wind: 定义了缓慢变化的主风。
-        - gusts: 一个列表，定义了多个快速变化的阵风/湍流分量。
-        """
-        wind_vel_params = {
-            # 新增：风速随时间线性增长的斜率
-            'ramp_slope': np.array([0.1, 0.1, 0.01]), # 各轴风速每秒增加量 (m/s^2)
 
-            # 主风场：振幅减小，代表更平稳的整体趋势
-            'base_wind': {
-                'amp': np.array([0.2, 0.2, 0.05]),    # 各轴主风速振幅 (m/s) - 减小
-                'freq': np.array([0.04, 0.03, 0.1]), # 各轴主风速变化频率 (rad/s) - 保持慢速
-                'phase': np.array([0, np.pi/2, np.pi]), # 各轴风速相位
-                'offset': np.array([1.5, 2.5, 0.2])  # 各轴风速初始偏置 (m/s) - 减小
-            },
-            # 阵风/湍流：振幅减小，数量减少，代表更小的波动
-            'gusts': [
-                {'amp': np.array([0.05, 0.05, 0.05]), 'freq': np.array([2.2, 2.9, 1.5]), 'phase': np.array([0.1, 1.5, 3.0])}, # 振幅减小
-                {'amp': np.array([0.1, 0.15, 0.02]), 'freq': np.array([3.5, 3.1, 4.0]), 'phase': np.array([0.5, 2.5, 1.0])}, # 振幅减小
-                # 移除了最高频的阵风分量以减少整体波动
-            ]
-        }
-        self.params = wind_vel_params
-        print(f"💨 [高级风场] 多正弦波叠加风场模型已初始化。")
-        print(f"    - 初始偏置 (Offset): {self.params['base_wind']['offset']} m/s")
-        print(f"    - 增长斜率 (Ramp Slope): {self.params.get('ramp_slope', np.zeros(3))} m/s²")
-        print(f"    - 主风振幅 (Base Amp): {self.params['base_wind']['amp']} m/s")
-        print(f"    - 主风频率 (Base Freq): {self.params['base_wind']['freq']} rad/s")
-        print(f"    - 阵风分量数量: {len(self.params['gusts'])}")
-
-    def get_wind_velocity(self, t):
-        """根据时间 t 获取世界坐标系下的总风速向量。"""
-        # p = self.params
-        
-        # # 1. 计算缓慢变化的主风场，并加入线性增长项
-        # base = p['base_wind']
-        # ramp_effect = p.get('ramp_slope', np.zeros(3)) * t
-        # wind_velocity = base['offset'] + ramp_effect + base['amp'] * np.sin(base['freq'] * t + base['phase'])
-        
-        # # 2. 叠加所有阵风/湍流分量
-        # for gust in p['gusts']:
-        #     wind_velocity += gust['amp'] * np.sin(gust['freq'] * t + gust['phase'])
-
-        # X轴风速: f(t) = 1.3 * arctan(t - 4) + 1.8 + 0.2 * sin(0.7 * t)
-        wind_x =  1.0 + 0.03 * np.sin(0.6 * t) # 1.3 * np.arctan(t - 4) + 1.8 + 0.2 * np.sin(0.7 * t)
-        
-        # Y轴风速: g(t) = -1.0 * arctan(t - 9) - 0.5 + 0.2 * sin(0.5 * t)
-        wind_y = -0.4 + 0.01 * np.sin(0.5 * t)
-        
-        # Z轴风速 (未指定，设为0)
-        wind_z = 0.06 + 0.01 * np.sin(0.5 * t)
-
-        # # X轴风速: f(t) = 1.3 * arctan(t - 4) + 1.8 + 0.2 * sin(0.7 * t)
-        # wind_x = 1.3 * np.arctan(t - 4) + 2.0 + 0.2 * np.sin(0.7 * t)
-        
-        # # Y轴风速: g(t) = -1.0 * arctan(t - 9) - 0.5 + 0.2 * sin(0.5 * t)
-        # wind_y = -1.0 * np.arctan(t - 9) - 0.5 + 0.2 * np.sin(0.5 * t)
-        
-        # # Z轴风速 (未指定，设为0)
-        # wind_z = 0.6 + 0.05 * np.sin(0.1 * t) + 0.05 * np.sin(1.5 * t) + 0.02 * np.sin(4.0 * t)
-            
-        return np.array([wind_x, wind_y, wind_z])
-
-    def visualize(self, duration=20):
-        """可视化风速模型在一段时间内的函数图像，将三轴风速绘制在同一张图中。"""
-        set_publication_style(base_size=9)  # 设置专业的出版物风格
-
-        t_span = np.linspace(0, duration, 500)
-        wind_velocities = np.array([self.get_wind_velocity(t) for t in t_span])
-
-        fig, ax = plt.subplots(figsize=(3.5, 2.2))
-        axis_labels, colors = ['X-axis', 'Y-axis', 'Z-axis'], ['#FD763F', '#23BAC5', '#EECA40']
-        for i in range(3):
-            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=1.25, label=f'{axis_labels[i]}')
-        ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Velocity [m/s]')
-        ax.grid(True)
-
-        #显示图例
-        ax.legend(loc='upper right', frameon=True)
-        fig.tight_layout()
-
-        # 保存图像
-        fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'wind_velocity_visualization')
-        plt.savefig(fig_path + '.pdf', bbox_inches="tight")
-        plt.savefig(fig_path + '.svg', bbox_inches="tight")
-        if SimpleSimConfig.show_intermediate_plots:
-            plt.show()
-        else:
-            plt.close()
-    
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
                           t_horizon=1.0, q_diagonal=None, r_diagonal=None, q_mask=None,
                           use_online_gp=False):
@@ -577,29 +471,15 @@ if __name__ == '__main__':
     t_opt = np.zeros((len(traj_type_vec), len(av_speed_vec[0]), len(model_vec)))
 
     for n_train_id, model_type in enumerate(model_vec):
-        # --- 核心修改 1: 在此处准备在线GP管理器 ---
+        # Initialize online GP manager if needed
         online_gp_manager = None
         use_online_gp_ject = False
         if model_type["model"] and model_type["model"].get("use_online_gp", False):
             use_online_gp_ject = True
             print("\n" + "="*50)
-            print(f"为模型初始化在线GP管理器...")
+            print(f"Initializing Online GP Manager...")
             print("="*50)
-            online_gp_config = {
-            'num_dimensions': 3,
-            'main_process_device': 'cpu',  # Use CPU to avoid CUDA multiprocessing issues
-            'worker_device_str': 'cpu',    # Worker must use CPU for multiprocessing compatibility
-            'buffer_level_capacities': [5, 10, 6], # 三层缓冲区容量
-            'buffer_level_sparsity': [2, 4, 6],      # 稀疏因子：每1/2/5个点存入
-            'min_points_for_initial_train': 15,      # 触发首次训练的最小数据点
-            'min_points_for_ema': 15,                # 启用EMA所需的最小数据点
-            'refit_hyperparams_interval': 10,       # 触发再训练的更新次数间隔
-            'worker_train_iters': 20,               # 后台训练迭代次数
-            'worker_lr': 0.045,                       # 训练学习率
-            'ema_alpha': 0.05,                       # EMA平滑系数
-            }
-            online_gp_manager = IncrementalGPManager(config=online_gp_config)
-        # --- 修改结束 ---
+            online_gp_manager = IncrementalGPManager(config=OnlineGPConfig().to_dict())
         if model_type["model"] is not None:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"], **model_type["model"])
             model_type_perfect = False
