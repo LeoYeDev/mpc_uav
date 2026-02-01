@@ -2,6 +2,10 @@
 Visualization module for MPC-UAV project.
 
 Provides plotting, animation, and style utilities for research visualization.
+
+GP-specific visualization:
+- gp_eval: For GP model evaluation (import directly: from src.visualization.gp_eval import ...)
+- gp_online: For online GP snapshots (import directly: from src.visualization.gp_online import ...)
 """
 
 from src.visualization.style import set_publication_style, SCI_COLORS
@@ -19,6 +23,11 @@ from src.visualization.paper_plots import (
     tracking_results_with_wind
 )
 from src.visualization.animation import Dynamic3DTrajectory
+
+# Note: gp_eval and gp_online are not imported here to avoid circular imports
+# Import them directly when needed:
+#   from src.visualization.gp_eval import gp_visualization_experiment
+#   from src.visualization.gp_online import visualize_gp_snapshot
 
 __all__ = [
     # Style

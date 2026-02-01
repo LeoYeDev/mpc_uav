@@ -6,7 +6,6 @@ Contains:
 - utils: GP utilities (GPDataset, restore_gp_regressors, etc.)
 - offline: Offline GP training
 - online: Online incremental GP
-- visualization: GP visualization tools
 - rdrv: RDRV model fitting
 """
 

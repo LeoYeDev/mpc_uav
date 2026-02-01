@@ -13,7 +13,7 @@ from src.gp.base import CustomKernelFunctions as npKernelFunctions
 from src.gp.base import CustomGPRegression as npGPRegression
 from src.gp.base import GPEnsemble
 from src.gp.utils import GPDataset, restore_gp_regressors, read_dataset
-from src.gp.visualization import gp_visualization_experiment
+from src.visualization.gp_eval import gp_visualization_experiment
 from config.configuration_parameters import ModelFitConfig as Conf
 
 # 假设 set_publication_style 和 SCI_COLORS 已经可以从 visualization 模块导入

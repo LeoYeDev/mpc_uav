@@ -34,7 +34,7 @@ global model_num
 from src.gp.online import *
 import matplotlib.pyplot as plt
 from src.gp.online import IncrementalGPManager
-from src.gp.online_visualization import visualize_gp_snapshot
+from src.visualization.gp_online import visualize_gp_snapshot
 ######
 
 # ==============================================================================
