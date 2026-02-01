@@ -31,7 +31,9 @@ from src.visualization.paper_plots import plot_tracking_error_comparison
 from src.visualization.gp_online import visualize_gp_snapshot
 from src.gp.rdrv import load_rdrv
 from src.gp.utils import world_to_body_velocity_mapping
+from src.gp.utils import world_to_body_velocity_mapping
 from src.gp.online import IncrementalGPManager
+from src.utils.data_logger import DataLogger
 
 
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
@@ -457,7 +459,10 @@ if __name__ == '__main__':
     legends += ['nominal']
 
     # --- 修改 2: 准备用于在内存中保存绘图数据的变量 ---
-    all_results_data = {} # 使用字典在内存中存储每个控制器的最终绘图数据
+    # --- 修改 2: 准备用于在内存中保存绘图数据的变量 ---
+    # all_results_data = {} # Deprecated: Refactored to use DataLogger
+    experiment_logger = DataLogger()
+    # --- 修改结束 ---
     # --- 修改结束 ---
 
     #加入单GP模型
@@ -513,13 +518,13 @@ if __name__ == '__main__':
                 # 我们只保存最后一次速度测试的结果作为绘图代表
                 if v_id == len(av_speed_vec[traj_id]) - 1:
                     controller_name = legends[n_train_id]
-                    # 将数据存储在一个字典中
+                    # 使用 DataLogger 存储
                     result_data = {
                         't_ref': t_ref,
                         'x_ref': x_ref,
                         'x_executed': x_executed,
                     }
-                    all_results_data[controller_name] = result_data
+                    experiment_logger.log(controller_name, result_data)
                     print(f"💾 结果已为控制器 '{controller_name}' 存储在内存中。")
                 # --- 修改结束 ---
         # --- 核心修改 3: 在模型的所有速度测试结束后，再关闭管理器 ---
@@ -549,8 +554,17 @@ if __name__ == '__main__':
     }
     
     # 调用新的绘图函数，传入内存中的数据字典
+    # DataLogger.data 存储的是 list，我们需要的是 {controller_name: result_data}
+    # 因为我们每个控制器只log了一次result_data，所以这里取 experiment_logger.data[key][0]
+    
+    final_results_data = {}
+    logged_data = experiment_logger.to_dict()
+    for key, val_list in logged_data.items():
+        if len(val_list) > 0:
+            final_results_data[key] = val_list[0]
+            
     plot_tracking_error_comparison(
-        results_data=all_results_data,
+        results_data=final_results_data,
         controller_map=controller_plot_map
     )
     # --- 修改结束 ---
