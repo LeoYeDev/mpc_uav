@@ -1,11 +1,21 @@
-# 配置 Matplotlib 后端为 TkAgg（GUI 后端，需 XServer 支持）
+import os
 import matplotlib
-matplotlib.use('TkAgg')  # 注意：旧版本 Matplotlib 可能不支持 'QtAgg'，'TkAgg' 兼容性更好
+# Check for DISPLAY environment variable to avoid crashes on headless servers
+if os.environ.get('DISPLAY', '') == '':
+    print('No display found. Using non-interactive Agg backend')
+    matplotlib.use('Agg')
+else:
+    try:
+        matplotlib.use('TkAgg')
+    except ImportError:
+        print('TkAgg backend not found. Using Agg backend')
+        matplotlib.use('Agg')
 
 import torch
 import gpytorch
 import time
 import numpy as np
+from typing import Tuple, List, Optional
 import copy
 from collections import deque
 import matplotlib.pyplot as plt
@@ -340,7 +350,7 @@ class IncrementalGPManager:
     - 负责创建和管理所有后台工作进程和通信队列。
     - 提供统一的接口 (`update`, `predict`, `shutdown`) 给外部调用。
     """
-    def __init__(self, config):
+    def __init__(self, config: dict):
         self.config = config
         self.num_dimensions = config.get('num_dimensions', 3)
         self.gps = [IncrementalGP(i, config) for i in range(self.num_dimensions)]
@@ -385,8 +395,14 @@ class IncrementalGPManager:
         self.shutdown()
         sys.exit(0)
 
-    def update(self, new_velocities, new_residuals):
-        """非阻塞更新：添加数据点，并根据条件触发后台训练任务。"""
+    def update(self, new_velocities: np.ndarray, new_residuals: np.ndarray) -> None:
+        """
+        非阻塞更新：添加数据点，并根据条件触发后台训练任务。
+        
+        Args:
+            new_velocities (np.ndarray): 输入速度向量 (num_dimensions,)
+            new_residuals (np.ndarray): 目标残差向量 (num_dimensions,)
+        """
         for i in range(self.num_dimensions):
             gp = self.gps[i]
             gp.add_data_point(new_velocities[i], new_residuals[i])
@@ -471,8 +487,18 @@ class IncrementalGPManager:
        
        print("✅ Manager reset complete.") 
 
-    def predict(self, query_velocities):
-        """使用主进程中的实时模型进行预测。"""
+    def predict(self, query_velocities: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        使用主进程中的实时模型进行预测。
+        
+        Args:
+            query_velocities (np.ndarray): 查询点的速度向量 (n_samples, num_dimensions)
+            
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (均值, 方差)
+                - means: 预测均值 (n_samples, num_dimensions)
+                - variances: 预测方差 (n_samples, num_dimensions)
+        """
         means = np.zeros((query_velocities.shape[0], self.num_dimensions), dtype=float)
         variances = np.ones_like(means, dtype=float)
 

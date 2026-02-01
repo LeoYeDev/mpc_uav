@@ -11,6 +11,7 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
 import casadi as cs
+from typing import Union, List, Optional, Tuple, Dict
 
 import numpy as np
 from src.core.optimizer import Quad3DOptimizer
@@ -86,22 +87,28 @@ class Quad3DMPC:
     def clear(self):
         self.quad_opt.clear_acados_model()
 
-    def get_state(self):
+    def get_state(self) -> np.ndarray:
         """
-        Returns the state of the drone, with the angle described as a wxyz quaternion
-        :return: 13x1 array with the drone state: [p_xyz, a_wxyz, v_xyz, r_xyz]
+        Returns the state of the drone, with the angle described as a wxyz quaternion.
+        
+        Returns:
+            np.ndarray: 13x1 array with the drone state: [p_xyz, a_wxyz, v_xyz, r_xyz]
         """
 
         x = np.expand_dims(self.quad.get_state(quaternion=True, stacked=True), 1)
         return x
 
-    def set_reference(self, x_reference, u_reference=None):
+    def set_reference(self, x_reference: Union[List, np.ndarray], u_reference: Optional[np.ndarray] = None) -> int:
         """
-        Sets a target state for the MPC optimizer
-        :param x_reference: list with 4 sub-components (position, angle quaternion, velocity, body rate). If these four
-        are lists, then this means a single target point is used. If they are Nx3 and Nx4 (for quaternion) numpy arrays,
-        then they are interpreted as a sequence of N tracking points.
-        :param u_reference: Optional target for the optimized control inputs
+        Sets a target state for the MPC optimizer.
+        
+        Args:
+            x_reference: list with 4 sub-components (position, angle quaternion, velocity, body rate). 
+                         If arrays are Nx3/Nx4, interpreted as sequence.
+            u_reference: Optional target for the optimized control inputs
+            
+        Returns:
+            int: Index of the selected GP model
         """
 
         if isinstance(x_reference[0], list):
@@ -111,15 +118,19 @@ class Quad3DMPC:
             # Target state is a sequence
             return self.quad_opt.set_reference_trajectory(x_reference, u_reference)
 
-    def optimize(self, use_model=0, return_x=False, online_gp_predictions=None):
+    def optimize(self, use_model: int = 0, return_x: bool = False, online_gp_predictions: Optional[dict] = None) -> tuple:
         """
         Runs MPC optimization to reach the pre-set target.
-        :param use_model: Integer. Select which dynamics model to use from the available options.
-        :param return_x: bool, whether to also return the optimized sequence of states alongside with the controls.
-
-        :return: 4*m vector of optimized control inputs with the format: [u_1(0), u_2(0), u_3(0), u_4(0), u_1(1), ...,
-        u_3(m-1), u_4(m-1)]. If return_x is True, will also return a vector of shape N+1 x 13 containing the optimized
-        state prediction.
+        
+        Args:
+            use_model (int): Select which dynamics model to use.
+            return_x (bool): If True, returns optimized state prediction.
+            online_gp_predictions (dict, optional): Predictions from online GP for AR-MPC.
+            
+        Returns:
+            tuple: (u_opt, [x_opt])
+                - u_opt: Optimized control input sequence
+                - x_opt: (Optional) Optimized state sequence
         """
 
         quad_current_state = self.quad.get_state(quaternion=True, stacked=True)
@@ -130,11 +141,13 @@ class Quad3DMPC:
                                                  gp_regression_state=quad_gp_state,online_gp_predictions=online_gp_predictions)
         return out_out
 
-    def simulate(self, ref_u, external_v=None):
+    def simulate(self, ref_u: np.ndarray, external_v: Optional[np.ndarray] = None) -> None:
         """
         Runs the simulation step for the dynamics model of the quadrotor 3D.
-
-        :param ref_u: 4-length reference vector of control inputs
+        
+        Args:
+            ref_u (np.ndarray): 4-length reference vector of control inputs
+            external_v (np.ndarray, optional): External velocity disturbance
         """
 
         # Simulate step
@@ -218,10 +231,20 @@ class Quad3DMPC:
         return
     
     # --- ADDED: New method for accurate single-step model prediction ---
-    def predict_model_step_accurately(self, current_state_np, control_input_np, integration_period, use_model_idx):
+    def predict_model_step_accurately(self, current_state_np: np.ndarray, control_input_np: np.ndarray, 
+                                      integration_period: float, use_model_idx: int) -> np.ndarray:
         """
         准确预测模型在单个时间步后的状态，用于计算残差。
         此版本已修复参数维度不匹配的问题。
+        
+        Args:
+            current_state_np (np.ndarray): 当前状态
+            control_input_np (np.ndarray): 控制输入
+            integration_period (float): 积分时间
+            use_model_idx (int): 使用的模型索引
+            
+        Returns:
+            np.ndarray: 预测的下一时刻状态
         """
         if not hasattr(self.quad_opt, 'acados_model_definitions') or \
            use_model_idx not in self.quad_opt.acados_model_definitions:
