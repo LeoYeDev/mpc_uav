@@ -14,6 +14,9 @@ import matplotlib.pyplot as plt
 from multiprocessing import Process, Queue, Event
 import queue  # 用于处理空队列异常
 import traceback # 用于打印详细的错误信息
+import atexit
+import signal
+import sys
 
 # =================================================================================
 # 1. 模型与数据缓冲区定义
@@ -365,6 +368,22 @@ class IncrementalGPManager:
             worker.start()
             self.workers.append(worker)
         print("[管理器] 所有后台工作进程已成功启动。")
+        
+        # 注册自动清理
+        atexit.register(self.shutdown)
+        # 注意: 信号处理是全局的，可能会覆盖其他处理程序。
+        # 在复杂的应用程序中，应谨慎使用。
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except ValueError:
+            # 当不在主线程运行时，无法设置信号处理程序
+            pass
+
+    def _signal_handler(self, signum, frame):
+        print(f"\n[管理器] 捕获信号 {signum}，正在强制关闭...")
+        self.shutdown()
+        sys.exit(0)
 
     def update(self, new_velocities, new_residuals):
         """非阻塞更新：添加数据点，并根据条件触发后台训练任务。"""

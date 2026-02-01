@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 
 from config.configuration_parameters import SimpleSimConfig
 from config.gp_config import OnlineGPConfig
+from config.paths import DEFAULT_MODEL_VERSION, DEFAULT_MODEL_NAME, DEFAULT_MODEL_TYPE
 from src.core.controller import Quad3DMPC
 from src.core.dynamics import Quadrotor3D
 from src.utils.quad_3d_opt_utils import get_reference_chunk
@@ -438,9 +439,9 @@ if __name__ == '__main__':
     # av_speed_vec = [[2.0, 2.7, 3.0, 3.2, 3.5],
     #                 [2.0, 4.5, 7.0, 9.5, 12.0],
     #                 [2.0, 4.5, 7.0, 9.5, 12.0]]
-    git_list = '89954f3'
-    name_list = 'simple_sim_gp'
-    type_list = 'gp'
+    git_list = DEFAULT_MODEL_VERSION
+    name_list = DEFAULT_MODEL_NAME
+    type_list = DEFAULT_MODEL_TYPE
 
     # Simulation options
     plot_sim = SimpleSimConfig.custom_sim_gui

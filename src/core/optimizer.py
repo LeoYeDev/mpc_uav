@@ -23,6 +23,7 @@ from src.core.dynamics import Quadrotor3D
 from src.gp.base import GPEnsemble
 from src.utils.utils import skew_symmetric, v_dot_q, safe_mkdir_recursive, quaternion_inverse
 from src.utils.quad_3d_opt_utils import discretize_dynamics_and_cost
+from config.paths import ACADOS_MODELS_DIR
 
 
 class Quad3DOptimizer:
@@ -163,9 +164,10 @@ class Quad3DOptimizer:
             q_diagonal *= q_mask
 
         # Ensure current working directory is current folder
-        os.chdir(os.path.dirname(os.path.realpath(__file__)))
-        self.acados_models_dir = '../../acados_models'
-        safe_mkdir_recursive(os.path.join(os.getcwd(), self.acados_models_dir))
+        # Ensure current working directory is current folder
+        # os.chdir(os.path.dirname(os.path.realpath(__file__)))
+        self.acados_models_dir = ACADOS_MODELS_DIR
+        safe_mkdir_recursive(self.acados_models_dir)
 
         for key, key_model in zip(acados_models.keys(), acados_models.values()):
             nx = key_model.x.size()[0]
