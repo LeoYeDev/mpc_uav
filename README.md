@@ -59,24 +59,25 @@ Tracking RMSE: ~0.2 m
 ```
 mpc_uav/
 ├── src/
-│   ├── quad_mpc/          # MPC 控制器
-│   │   ├── quad_3d.py           # 四旋翼动力学
-│   │   ├── quad_3d_mpc.py       # GP-MPC 控制器
-│   │   └── quad_3d_optimizer.py # ACADOS 优化器
-│   ├── model_fitting/     # GP 模型训练
-│   │   ├── gp.py                # 自定义 GP
-│   │   ├── gp_fitting.py        # 模型训练
-│   │   └── gp_online.py         # 在线学习
+│   ├── core/              # 核心控制模块
+│   │   ├── dynamics.py         # 四旋翼动力学 (Quadrotor3D)
+│   │   ├── controller.py       # GP-MPC 控制器 (Quad3DMPC)
+│   │   └── optimizer.py        # ACADOS 优化器 (Quad3DOptimizer)
+│   ├── gp/                # 高斯过程模块
+│   │   ├── base.py             # GP 基础实现 (GPEnsemble)
+│   │   ├── utils.py            # GP 工具函数 (GPDataset)
+│   │   ├── offline.py          # 离线 GP 训练
+│   │   └── online.py           # 在线增量学习
 │   ├── experiments/       # 实验脚本
 │   │   ├── trajectory_test.py
 │   │   └── comparative_experiment.py
 │   ├── visualization/     # 可视化模块
-│   │   ├── plotting.py          # 绘图工具
-│   │   ├── paper_plots.py       # 论文级可视化
-│   │   ├── style.py             # 样式配置
-│   │   └── animation.py         # 3D动画
+│   │   ├── plotting.py         # 绘图工具
+│   │   ├── paper_plots.py      # 论文级可视化
+│   │   ├── style.py            # 样式配置
+│   │   └── animation.py        # 3D动画
 │   └── utils/             # 工具函数
-│       └── trajectories.py      # 轨迹生成
+│       └── trajectories.py     # 轨迹生成
 ├── config/                # 配置参数
 ├── outputs/               # 输出目录
 │   ├── figures/           # 生成的图表
