@@ -2,7 +2,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import gpytorch
+import os
 from src.utils.visual_set import set_publication_style
+from config.configuration_parameters import DirectoryConfig
 from matplotlib.ticker import StrMethodFormatter # <-- 新增导入
 
 # 注意: 如果 gp_common 模块无法找到，请确保正确设置了 PYTHONPATH
@@ -176,8 +178,9 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
         top=0.87     # 预留顶部空间给图例
     )
     
-    plt.savefig("online_gp_snapshot.pdf", bbox_inches="tight")
-    plt.savefig("online_gp_snapshot.svg", bbox_inches="tight")
+    fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'online_gp_snapshot')
+    plt.savefig(fig_path + '.pdf', bbox_inches="tight")
+    plt.savefig(fig_path + '.svg', bbox_inches="tight")
     plt.show(block=False)
 
     # --- 3. 任务二：绘制独立的、仅含X轴的精美快照 ---
@@ -186,7 +189,7 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
     fig_x, ax_x = plt.subplots(1, 1, figsize=(3, 2), dpi=150)
 
     # 仅针对 X 轴 (索引 i=0) 进行绘图
-    i = 2 # 硬编码为X轴
+    i = 0  # X轴索引 (0=X, 1=Y, 2=Z)
     gp = online_gp_manager.gps[i]
 
     if not gp.is_trained_once:
@@ -248,7 +251,8 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
         ax_x.legend()
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig("online_gp_snapshot_x_only.pdf", bbox_inches="tight")
-    plt.savefig("online_gp_snapshot_x_only.svg", bbox_inches="tight")
+    fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'online_gp_snapshot_x_only')
+    plt.savefig(fig_path + '.pdf', bbox_inches="tight")
+    plt.savefig(fig_path + '.svg', bbox_inches="tight")
     plt.show(block=False)
     print("--- 仅X轴图已生成。---")

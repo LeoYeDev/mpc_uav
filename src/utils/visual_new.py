@@ -1,9 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib.lines import Line2D
 from src.utils.visual_set import set_publication_style
+from config.configuration_parameters import DirectoryConfig
 
 global combined_plot_data
 combined_plot_data = []
@@ -156,8 +158,9 @@ def plot_combined_results(combined_plot_data):
     plt.subplots_adjust(top=0.83, wspace=0.1, right=0.9)
     
     # 保存多种格式
-    plt.savefig("combined_tracking_results.pdf", bbox_inches="tight", dpi=600)
-    plt.savefig("combined_tracking_results.svg", bbox_inches="tight", dpi=600)
+    fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'combined_tracking_results')
+    plt.savefig(fig_path + '.pdf', bbox_inches="tight", dpi=600)
+    plt.savefig(fig_path + '.svg', bbox_inches="tight", dpi=600)
     
     plt.show()
 # ==============================================================================
@@ -245,7 +248,8 @@ def plot_tracking_error_comparison(results_data, controller_map):
         top=0.85     # 预留顶部空间给图例
     )
 
-    plt.savefig("tracking_error_comparison.pdf", bbox_inches="tight")
-    plt.savefig("tracking_error_comparison.svg", bbox_inches="tight")
+    fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'tracking_error_comparison')
+    plt.savefig(fig_path + '.pdf', bbox_inches="tight")
+    plt.savefig(fig_path + '.svg', bbox_inches="tight")
     plt.show()
 
