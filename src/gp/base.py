@@ -15,6 +15,8 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 import numpy as np
 import casadi as cs
 import joblib
+from config.gp_config import GPModelParams
+from typing import Union
 
 from tqdm import tqdm
 from operator import itemgetter
@@ -28,7 +30,7 @@ from src.utils.utils import safe_mknode_recursive, make_bz_matrix
 
 class CustomKernelFunctions:
 
-    def __init__(self, kernel_func, params=None):
+    def __init__(self, kernel_func, params: Union[dict, GPModelParams] = None):
 
         self.params = params
         self.kernel_type = kernel_func
@@ -36,6 +38,12 @@ class CustomKernelFunctions:
         if self.kernel_type == 'squared_exponential':
             if params is None:
                 self.params = {'l': [1.0], 'sigma_f': 1.0}
+            elif isinstance(params, GPModelParams):
+                # Adapter for GPModelParams
+                self.params = {
+                    'l': params.length_scale,
+                    'sigma_f': np.sqrt(params.signal_variance) # internal sigma_f is usually amplitude, variance is sigma_f^2
+                }
             self.kernel = self.squared_exponential_kernel
         else:
             raise NotImplementedError("only squared_exponential is supported")

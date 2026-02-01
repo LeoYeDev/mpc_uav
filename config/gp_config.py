@@ -9,6 +9,15 @@ from typing import List
 
 
 @dataclass
+class GPModelParams:
+    """
+    Standardized parameters for Gaussian Process models.
+    """
+    length_scale: List[float]  # Length scales for each dimension
+    signal_variance: float     # Signal variance (sigma_f^2 or sigma_f)
+    noise_variance: float      # Noise variance (sigma_n^2)
+
+@dataclass
 class OnlineGPConfig:
     """
     Configuration for online (incremental) Gaussian Process.

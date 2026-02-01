@@ -19,6 +19,7 @@ from typing import Tuple, List, Optional
 import copy
 from collections import deque
 import matplotlib.pyplot as plt
+from config.gp_config import GPModelParams
 
 # 导入多进程和队列相关模块
 from multiprocessing import Process, Queue, Event
@@ -296,7 +297,23 @@ class IncrementalGP:
         self.likelihood.cpu()
         state = {'model': self.model.state_dict(), 'likelihood': self.likelihood.state_dict()}
         self.model.to(self.device)
+        self.model.to(self.device)
         return state
+
+    def get_model_params(self) -> GPModelParams:
+        """
+        Extract current hyperparameters in unified GPModelParams format.
+        """
+        # GPyTorch stores constraints in transformed space, use item() to get value
+        length_scale = self.model.covar_module.base_kernel.lengthscale.cpu().detach().view(-1).numpy().tolist()
+        output_scale = self.model.covar_module.outputscale.cpu().detach().item()
+        noise = self.likelihood.noise.cpu().detach().item()
+
+        return GPModelParams(
+            length_scale=length_scale,
+            signal_variance=output_scale,
+            noise_variance=noise
+        )
 
     def load_new_state_from_worker(self, new_state_dict, history):
         """从worker加载训练好的新状态字典并更新实时模型。"""
