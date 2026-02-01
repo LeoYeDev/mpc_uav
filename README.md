@@ -70,9 +70,18 @@ mpc_uav/
 │   ├── experiments/       # 实验脚本
 │   │   ├── trajectory_test.py
 │   │   └── comparative_experiment.py
+│   ├── visualization/     # 可视化模块
+│   │   ├── plotting.py          # 绘图工具
+│   │   ├── paper_plots.py       # 论文级可视化
+│   │   ├── style.py             # 样式配置
+│   │   └── animation.py         # 3D动画
 │   └── utils/             # 工具函数
 │       └── trajectories.py      # 轨迹生成
 ├── config/                # 配置参数
+├── outputs/               # 输出目录
+│   ├── figures/           # 生成的图表
+│   ├── models/            # 训练的模型
+│   └── experiments/       # 实验结果
 ├── docs/                  # 文档
 └── requirements.txt
 ```
