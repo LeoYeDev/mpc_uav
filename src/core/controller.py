@@ -13,8 +13,8 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 import casadi as cs
 
 import numpy as np
-from src.quad_mpc.quad_3d_optimizer import Quad3DOptimizer
-from src.model_fitting.gp_common import restore_gp_regressors
+from src.core.optimizer import Quad3DOptimizer
+from src.gp.utils import restore_gp_regressors
 from src.utils.quad_3d_opt_utils import simulate_plant, uncertainty_forward_propagation
 from src.utils.utils import make_bx_matrix
 

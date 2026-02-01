@@ -17,25 +17,24 @@ import torch
 import os
 
 from config.configuration_parameters import SimpleSimConfig, DirectoryConfig
-from src.quad_mpc.quad_3d_mpc import Quad3DMPC
-from src.quad_mpc.quad_3d import Quadrotor3D
+from src.core.controller import Quad3DMPC
+from src.core.dynamics import Quadrotor3D
 from src.utils.quad_3d_opt_utils import get_reference_chunk
 from src.utils.utils import load_pickled_models, interpol_mse, separate_variables
 from src.visualization.plotting import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
     get_experiment_files, mse_tracking_experiment_plot
 from src.visualization.paper_plots import plot_combined_results, plot_tracking_error_comparison, tracking_results_with_wind
 from src.utils.trajectories import random_trajectory, lemniscate_trajectory, loop_trajectory
-from src.model_fitting.rdrv_fitting import load_rdrv
-from src.model_fitting.gp_common import world_to_body_velocity_mapping
+from src.gp.rdrv import load_rdrv
+from src.gp.utils import world_to_body_velocity_mapping
 
 global model_num
 
 ######
-from src.model_fitting.gp_online import *
+from src.gp.online import *
 import matplotlib.pyplot as plt
-from src.model_fitting.gp_online import IncrementalGPManager
-from src.model_fitting.gp_online_visualization import visualize_gp_snapshot
-from src.model_fitting.gp_common import world_to_body_velocity_mapping 
+from src.gp.online import IncrementalGPManager
+from src.gp.online_visualization import visualize_gp_snapshot
 ######
 
 # ==============================================================================

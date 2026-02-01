@@ -9,11 +9,11 @@ import matplotlib.pyplot as plt
 from src.utils.utils import safe_mkdir_recursive, load_pickled_models
 from src.utils.utils import distance_maximizing_points, get_model_dir_and_file
 from src.utils.utils import sample_random_points
-from src.model_fitting.gp import CustomKernelFunctions as npKernelFunctions
-from src.model_fitting.gp import CustomGPRegression as npGPRegression
-from src.model_fitting.gp import GPEnsemble
-from src.model_fitting.gp_common import GPDataset, restore_gp_regressors, read_dataset
-from src.model_fitting.gp_visualization import gp_visualization_experiment
+from src.gp.base import CustomKernelFunctions as npKernelFunctions
+from src.gp.base import CustomGPRegression as npGPRegression
+from src.gp.base import GPEnsemble
+from src.gp.utils import GPDataset, restore_gp_regressors, read_dataset
+from src.gp.visualization import gp_visualization_experiment
 from config.configuration_parameters import ModelFitConfig as Conf
 
 # 假设 set_publication_style 和 SCI_COLORS 已经可以从 visualization 模块导入

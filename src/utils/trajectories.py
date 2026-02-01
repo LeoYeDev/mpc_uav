@@ -19,7 +19,7 @@ from src.utils.utils import quaternion_inverse, q_dot_q
 from src.utils.trajectory_generator import draw_poly, get_full_traj, fit_multi_segment_polynomial_trajectory
 from src.utils.keyframe_3d_gen import random_periodical_trajectory
 from config.configuration_parameters import DirectoryConfig
-from src.quad_mpc.quad_3d import Quadrotor3D
+from src.core.dynamics import Quadrotor3D
 import matplotlib.pyplot as plt
 import os
 import yaml

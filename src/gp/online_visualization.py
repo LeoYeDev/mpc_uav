@@ -9,9 +9,9 @@ from matplotlib.ticker import StrMethodFormatter # <-- 新增导入
 
 # 注意: 如果 gp_common 模块无法找到，请确保正确设置了 PYTHONPATH
 try:
-    from src.model_fitting.gp_common import world_to_body_velocity_mapping
+    from src.gp.utils import world_to_body_velocity_mapping
 except ImportError:
-    print("警告：无法从 src.model_fitting.gp_common 导入，将使用本地的虚拟函数。")
+    print("警告：无法从 src.gp.utils 导入，将使用本地的虚拟函数。")
 
 
 def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_str, **kwargs):

@@ -19,8 +19,8 @@ import casadi as cs
 import numpy as np
 from copy import copy
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
-from src.quad_mpc.quad_3d import Quadrotor3D
-from src.model_fitting.gp import GPEnsemble
+from src.core.dynamics import Quadrotor3D
+from src.gp.base import GPEnsemble
 from src.utils.utils import skew_symmetric, v_dot_q, safe_mkdir_recursive, quaternion_inverse
 from src.utils.quad_3d_opt_utils import discretize_dynamics_and_cost
 

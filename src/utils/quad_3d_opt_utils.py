@@ -13,7 +13,7 @@ this program. If not, see <http://www.gnu.org/licenses/>.
 
 import casadi as cs
 import numpy as np
-from src.quad_mpc.quad_3d import Quadrotor3D
+from src.core.dynamics import Quadrotor3D
 from tqdm import tqdm
 
 

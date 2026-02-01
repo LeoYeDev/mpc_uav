@@ -19,7 +19,7 @@ import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-from src.model_fitting.gp_common import GPDataset, read_dataset
+from src.gp.utils import GPDataset, read_dataset
 from src.utils.utils import v_dot_q, get_model_dir_and_file, safe_mknode_recursive
 from config.configuration_parameters import ModelFitConfig as Conf
 
