@@ -24,6 +24,7 @@ from src.utils.utils import load_pickled_models, interpol_mse, separate_variable
 from src.visualization.plotting import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
     get_experiment_files, mse_tracking_experiment_plot
 from src.visualization.paper_plots import plot_combined_results, plot_tracking_error_comparison, tracking_results_with_wind
+from src.visualization.style import set_publication_style
 from src.utils.trajectories import random_trajectory, lemniscate_trajectory, loop_trajectory
 from src.gp.rdrv import load_rdrv
 from src.gp.utils import world_to_body_velocity_mapping
