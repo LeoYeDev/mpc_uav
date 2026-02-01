@@ -23,7 +23,7 @@
 
 ### 1. 环境配置
 
-详细配置步骤请参考 [docs/SETUP_GUIDE.md](docs/setup.md)。
+详细配置步骤请参考 [docs/setup.md](docs/setup.md)。
 
 ```bash
 # 创建虚拟环境
@@ -36,8 +36,6 @@ pip install -r requirements.txt
 # 设置 PYTHONPATH
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 ```
-
-> **注意**: 需要先安装 ACADOS，详见 [SETUP_GUIDE](docs/SETUP_GUIDE.md)。
 
 ### 2. 验证安装
 
