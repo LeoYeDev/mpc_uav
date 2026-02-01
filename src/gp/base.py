@@ -41,7 +41,7 @@ class CustomKernelFunctions:
             elif isinstance(params, GPModelParams):
                 # Adapter for GPModelParams
                 self.params = {
-                    'l': params.length_scale,
+                    'l': np.array(params.length_scale),
                     'sigma_f': np.sqrt(params.signal_variance) # internal sigma_f is usually amplitude, variance is sigma_f^2
                 }
             self.kernel = self.squared_exponential_kernel

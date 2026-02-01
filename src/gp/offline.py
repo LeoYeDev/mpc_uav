@@ -13,48 +13,67 @@ from src.gp.base import CustomKernelFunctions as npKernelFunctions
 from src.gp.base import CustomGPRegression as npGPRegression
 from src.gp.base import GPEnsemble
 from src.gp.utils import GPDataset, restore_gp_regressors, read_dataset
+from src.gp.train_utils import train_gp_torch, extract_gp_params, compute_matrices_for_casadi
 from src.visualization.gp_eval import gp_visualization_experiment
 from src.visualization.gp_offline import plot_offline_gp_fit, plot_gp_regression
 from config.configuration_parameters import ModelFitConfig as Conf
+import torch
+import joblib
 
 
-def gp_train_and_save(x, y, gp_regressors, save_model, save_file, save_path, y_dims, cluster_n, progress_bar=True):
+def gp_train_and_save_torch(x, y, save_model, save_file, save_path, y_dims, cluster_n, progress_bar=True):
     """
-    Trains and saves the 'm' GP's in the gp_regressors list. Each of these regressors will predict on one of the output
-    variables only.
-
-    :param x: Feature variables for the regression training. A list of length m where each entry is a Nxn dataset, N is
-    the number of training samples and n is the feature space dimensionality. Each entry of this list will be used to
-    train the respective GP.
-    :param y: Output variables for the regression training. A list of length m where each entry is a N array, N is the
-    number of training samples. Each entry of this list will be used as ground truth output for the respective GP.
-    :param gp_regressors: List of m GPRegression objects (npGPRegression or skGPRegression)
-    :param save_model: Bool. Whether to save the trained models or not.
-    :param save_file: Name of file where to save the model. The 'pkl' extension will be added automatically.
-    :param save_path: Path where to store the trained model pickle file.
-    :param y_dims: List of length m, where each entry represents the state index that corresponds to each GP.
-    :param cluster_n: Number (int) of the cluster currently being trained.
-    :param progress_bar: Bool. Whether to visualize a progress bar or not.
-    :return: the same list as te input gp_regressors variable, but each GP has been trained and saved if requested.
+    Trains and saves GPs using PyTorch (GPyTorch).
     """
-
-    # If save model, generate saving directory
     if save_model:
         safe_mkdir_recursive(save_path)
 
     if progress_bar:
-        print("Training {} gp regression models".format(len(y_dims)))
+        print("Training {} gp regression models (PyTorch)".format(len(y_dims)))
     prog_range = tqdm(y_dims) if progress_bar else y_dims
 
-    for y_dim_reg, dim in enumerate(prog_range):
+    trained_gp_regressors = []
 
-        # Fit one regressor for each output dimension
-        gp_regressors[y_dim_reg].fit(x[y_dim_reg], y[y_dim_reg])
+    for i, dim in enumerate(prog_range):
+        # 1. Train with GPyTorch
+        print(f"  > optimizing dim {dim}...")
+        x_train = x[i]
+        y_train = y[i]
+        
+        # Train
+        model, likelihood = train_gp_torch(
+            x_train, y_train, 
+            n_iter=150,  # Increased iterations for better convergence
+            lr=0.05,
+            verbose=False
+        )
+        
+        # 2. Extract parameters
+        gp_params = extract_gp_params(model, likelihood)
+        print(f"    - LengthScale: {[f'{l:.3f}' for l in gp_params.length_scale]}")
+        print(f"    - SignalVar: {gp_params.signal_variance:.3f}, NoiseVar: {gp_params.noise_variance:.3f}")
+        
+        # 3. Compute matrices for CasADi compatibility & Save
+        model_dict = compute_matrices_for_casadi(gp_params, x_train, y_train)
+        
+        # Create a temporary npGPRegression just to hold the structure (optional, but good for returning)
+        # Or just save the dict
         if save_model:
             full_path = os.path.join(save_path, save_file + '_' + str(dim) + '_' + str(cluster_n) + '.pkl')
-            gp_regressors[y_dim_reg].save(full_path)
+            joblib.dump(model_dict, full_path)
+            print(f"    - Saved to {full_path}")
+            
+        # For immediate visualization/usage, we can create the object
+        # Note: We need to reconstruct how npGPRegression is initialized usually
+        # But here we just return the dict or the object if needed by the caller
+        
+        # Reconstruct object for caller (visualization)
+        # We need to know x_features/u_features which are not passed here clearly, 
+        # but the caller 'main' has them. 
+        # For now, we will return the model_dict, and the caller can reconstruct.
+        trained_gp_regressors.append(model_dict)
 
-    return gp_regressors
+    return trained_gp_regressors
 
 
 def main(x_features, u_features, reg_y_dim, quad_sim_options, dataset_name,
@@ -220,19 +239,25 @@ def main(x_features, u_features, reg_y_dim, quad_sim_options, dataset_name,
                 y_train = np.append(y_train, y_additional)
                 x_train = np.concatenate((x_train, cluster_x_points[training_points, :len(x_features)]), axis=0)
 
-        # #### GP TRAINING #### #
-        # Multidimensional input GP regressors
-        l_scale = length_scale * np.ones((x_train.shape[1], 1))
-
-        cluster_mean = centroids[cluster]
-        gp_params["mean"] = cluster_mean
-        gp_params["y_mean"] = cluster_y_mean
-
+        # #### GP TRAINING (PyTorch) #### #
+        
         # Train one independent GP for each output dimension
-        exponential_kernel = npKernelFunctions('squared_exponential', params={'l': l_scale, 'sigma_f': sigma_f})
-        gp_regressors.append(npGPRegression(kernel=exponential_kernel, **gp_params))
-        gp_regressors[cluster] = gp_train_and_save([x_train], [y_train], [gp_regressors[cluster]], True, save_file_name,
-                                                   save_file_path, [reg_y_dim], cluster, progress_bar=False)[0]
+        # We don't need to pre-initialize npGPRegression anymore
+        
+        trained_dicts = gp_train_and_save_torch(
+            [x_train], [y_train], 
+            save_model=True, 
+            save_file=save_file_name,
+            save_path=save_file_path, 
+            y_dims=[reg_y_dim], 
+            cluster_n=cluster
+        )
+        
+        # Reconstruct npGPRegression for visualization
+        model_dict = trained_dicts[0]
+        gp_reg = npGPRegression(x_features, u_features, reg_y_dim)
+        gp_reg.load(model_dict)
+        gp_regressors.append(gp_reg)
         
         # --- 核心修改：在训练后调用新的可视化函数 ---
         print(f"\n[可视化] 正在为维度 {reg_y_dim}, 集群 {cluster} 生成拟合图...")
@@ -242,7 +267,7 @@ def main(x_features, u_features, reg_y_dim, quad_sim_options, dataset_name,
             y_train=y_train,
             full_dataset_gp=gp_dataset,
             cluster_to_plot=cluster,
-            title=f"Offline GP Fit for Residual (Input Dim: {x_features[0]}, Output Dim: {reg_y_dim})",
+            title=f"Offline GP Fit (PyTorch Optimized) (Input Dim: {x_features[0]}, Output Dim: {reg_y_dim})",
             input_dim=x_features[0],
             output_dim=reg_y_dim
         )
