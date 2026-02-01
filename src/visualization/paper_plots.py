@@ -4,7 +4,7 @@ import os
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib.lines import Line2D
-from src.utils.visual_set import set_publication_style
+from src.visualization.style import set_publication_style
 from config.configuration_parameters import DirectoryConfig
 
 global combined_plot_data

@@ -20,7 +20,7 @@ from tqdm import tqdm
 from src.utils.utils import separate_variables
 from src.utils.quad_3d_opt_utils import get_reference_chunk
 from src.utils.trajectories import loop_trajectory, lemniscate_trajectory, check_trajectory
-from src.utils.visualization import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results
+from src.visualization.plotting import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results
 from src.experiments.comparative_experiment import prepare_quadrotor_mpc
 from config.configuration_parameters import SimpleSimConfig
 

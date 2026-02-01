@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import gpytorch
 import os
-from src.utils.visual_set import set_publication_style
+from src.visualization.style import set_publication_style
 from config.configuration_parameters import DirectoryConfig
 from matplotlib.ticker import StrMethodFormatter # <-- 新增导入
 

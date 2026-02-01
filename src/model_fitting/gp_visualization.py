@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from src.model_fitting.gp_common import GPDataset, restore_gp_regressors, read_dataset
 from config.configuration_parameters import ModelFitConfig as Conf
 from src.utils.utils import load_pickled_models
-from src.utils.visualization import visualize_gp_inference
+from src.visualization.plotting import visualize_gp_inference
 
 
 def gp_visualization_experiment(quad_sim_options, dataset_name,

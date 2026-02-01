@@ -21,10 +21,9 @@ from src.quad_mpc.quad_3d_mpc import Quad3DMPC
 from src.quad_mpc.quad_3d import Quadrotor3D
 from src.utils.quad_3d_opt_utils import get_reference_chunk
 from src.utils.utils import load_pickled_models, interpol_mse, separate_variables
-from src.utils.visualization import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
-    get_experiment_files
-from src.utils.visualization import mse_tracking_experiment_plot
-from  src.utils.visual_new import *
+from src.visualization.plotting import initialize_drone_plotter, draw_drone_simulation, trajectory_tracking_results, \
+    get_experiment_files, mse_tracking_experiment_plot
+from src.visualization.paper_plots import plot_combined_results, plot_tracking_error_comparison, tracking_results_with_wind
 from src.utils.trajectories import random_trajectory, lemniscate_trajectory, loop_trajectory
 from src.model_fitting.rdrv_fitting import load_rdrv
 from src.model_fitting.gp_common import world_to_body_velocity_mapping

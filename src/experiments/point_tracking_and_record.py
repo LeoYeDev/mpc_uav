@@ -24,7 +24,7 @@ import pandas as pd
 import numpy as np
 import casadi as cs
 
-from src.utils.visualization import draw_drone_simulation, initialize_drone_plotter
+from src.visualization.plotting import draw_drone_simulation, initialize_drone_plotter
 from src.experiments.comparative_experiment import prepare_quadrotor_mpc
 from src.utils.utils import safe_mknode_recursive, jsonify, euclidean_dist, get_data_dir_and_file
 from config.configuration_parameters import SimpleSimConfig

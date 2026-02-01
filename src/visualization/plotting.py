@@ -22,7 +22,7 @@ from matplotlib.colorbar import ColorbarBase
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 
-from src.utils.visual_set import *
+from src.visualization.style import *
 from config.configuration_parameters import DirectoryConfig as PathConfig
 from src.utils.utils import v_dot_q, quaternion_to_euler, quaternion_inverse, q_dot_q, safe_mknode_recursive, \
     safe_mkdir_recursive

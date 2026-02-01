@@ -23,7 +23,7 @@ from sklearn.mixture import GaussianMixture
 from src.model_fitting.gp import GPEnsemble, CustomGPRegression as npGPRegression
 from src.utils.utils import undo_jsonify, prune_dataset, safe_mknode_recursive, get_data_dir_and_file, \
     separate_variables, v_dot_q, quaternion_inverse
-from src.utils.visualization import visualize_data_distribution
+from src.visualization.plotting import visualize_data_distribution
 
 
 class GPDataset:

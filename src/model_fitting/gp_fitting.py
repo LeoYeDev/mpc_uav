@@ -18,7 +18,7 @@ from config.configuration_parameters import ModelFitConfig as Conf
 
 # 假设 set_publication_style 和 SCI_COLORS 已经可以从 visualization 模块导入
 try:
-    from src.utils.visual_set import set_publication_style, SCI_COLORS
+    from src.visualization.style import set_publication_style, SCI_COLORS
 except ImportError:
     print("警告：无法从 src.utils.visualization 导入样式函数，将使用备用样式。")
 
