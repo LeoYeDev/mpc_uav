@@ -27,26 +27,24 @@ class OnlineGPConfig:
         num_dimensions: Number of output dimensions (typically 3 for vx, vy, vz)
         main_process_device: Device for main process ('cpu' or 'cuda')
         worker_device_str: Device for worker processes (must be 'cpu' for multiprocessing)
-        buffer_level_capacities: Capacity for each buffer level
-        buffer_level_sparsity: Sparsity factor for each buffer level
+        buffer_max_size: Maximum number of points in buffer
+        novelty_weight: Weight for novelty vs recency in buffer scoring (0-1)
+        error_threshold: Prediction error threshold for triggering retraining (m/s^2)
         min_points_for_initial_train: Minimum points to trigger first training
-        min_points_for_ema: Minimum points to enable EMA smoothing
         refit_hyperparams_interval: Number of updates between retraining
         worker_train_iters: Training iterations per worker task
         worker_lr: Learning rate for training
-        ema_alpha: EMA smoothing coefficient
     """
     num_dimensions: int = 3
     main_process_device: str = 'cpu'
     worker_device_str: str = 'cpu'
-    buffer_level_capacities: List[int] = field(default_factory=lambda: [5, 10, 6])
-    buffer_level_sparsity: List[int] = field(default_factory=lambda: [2, 4, 6])
+    buffer_max_size: int = 30
+    novelty_weight: float = 0.7
+    error_threshold: float = 0.15
     min_points_for_initial_train: int = 15
-    min_points_for_ema: int = 15
     refit_hyperparams_interval: int = 10
     worker_train_iters: int = 20
     worker_lr: float = 0.045
-    ema_alpha: float = 0.05
     
     def to_dict(self):
         """Convert config to dictionary for compatibility with existing code."""
@@ -54,14 +52,13 @@ class OnlineGPConfig:
             'num_dimensions': self.num_dimensions,
             'main_process_device': self.main_process_device,
             'worker_device_str': self.worker_device_str,
-            'buffer_level_capacities': self.buffer_level_capacities,
-            'buffer_level_sparsity': self.buffer_level_sparsity,
+            'buffer_max_size': self.buffer_max_size,
+            'novelty_weight': self.novelty_weight,
+            'error_threshold': self.error_threshold,
             'min_points_for_initial_train': self.min_points_for_initial_train,
-            'min_points_for_ema': self.min_points_for_ema,
             'refit_hyperparams_interval': self.refit_hyperparams_interval,
             'worker_train_iters': self.worker_train_iters,
             'worker_lr': self.worker_lr,
-            'ema_alpha': self.ema_alpha,
         }
 
 

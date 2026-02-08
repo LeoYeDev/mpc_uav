@@ -58,66 +58,90 @@ class ExactGPModel(gpytorch.models.ExactGP):
         # 返回一个多元高斯分布
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
-class MultiLevelBuffer:
+
+
+
+class InformationGainBuffer:
     """
-    多级数据缓冲区。
-    - 负责高效地存储和采样数据点。
-    - 拥有多个层级，每个层级有不同的容量和稀疏度。
-    - 新数据优先进入最高密度层，当层满时，最旧的数据会被“挤出”并尝试进入下一稀疏层。
+    基于信息增益评分的数据缓冲区。
+    - 结合新颖性（与现有点的距离）和时效性（时间衰减）来评估数据价值
+    - 当缓冲区满时，移除信息价值最低的点
     """
-    def __init__(self, level_max_capacities, level_sparsity_factors):
-        # 检查输入合法性
-        if len(level_max_capacities) != len(level_sparsity_factors):
-            raise ValueError("Capacities and sparsity factor lists must have the same length.")
-        self.num_levels = len(level_max_capacities)
-        self.capacities = level_max_capacities
-        # 创建每一层的双端队列作为缓冲区
-        self.levels = [deque(maxlen=cap) for cap in self.capacities]
-        self.sparsity_factors = level_sparsity_factors
-        # 记录总共添加的数据点数量
+    def __init__(self, max_size: int, novelty_weight: float = 0.7, min_distance: float = 0.01):
+        """
+        Args:
+            max_size: 缓冲区最大容量
+            novelty_weight: 新颖性权重 (0-1)，剩余为时效性权重
+            min_distance: 最小距离阈值，低于此值的点被认为是重复的
+        """
+        self.max_size = max_size
+        self.novelty_weight = novelty_weight
+        self.recency_weight = 1.0 - novelty_weight
+        self.min_distance = min_distance
+        self.data = []  # List of (v, y, insertion_time)
         self.total_adds = 0
-
-    def insert(self, v_scalar, y_scalar):
-        """
-        向缓冲区中插入一个新的数据点 (v, y)。
-        """
+    
+    def _compute_novelty(self, v_new: float) -> float:
+        """计算新点相对于现有点的新颖性得分。"""
+        if not self.data:
+            return 1.0
+        distances = [abs(v_new - p[0]) for p in self.data]
+        min_dist = min(distances)
+        # 归一化到 [0, 1]，距离越大新颖性越高
+        return min(min_dist / (self.min_distance * 10 + 1e-7), 1.0)
+    
+    def _compute_scores(self) -> np.ndarray:
+        """计算所有现有点的信息价值得分。"""
+        if len(self.data) <= 1:
+            return np.ones(len(self.data))
+        
+        n = len(self.data)
+        scores = np.zeros(n)
+        
+        for i, (v_i, y_i, t_i) in enumerate(self.data):
+            # 新颖性：到其他点的最小距离
+            distances = [abs(v_i - p[0]) for j, p in enumerate(self.data) if j != i]
+            novelty = min(distances) if distances else 0.0
+            
+            # 时效性：基于插入顺序（较新的点得分更高）
+            recency = t_i / self.total_adds if self.total_adds > 0 else 1.0
+            
+            scores[i] = self.novelty_weight * novelty + self.recency_weight * recency
+        
+        return scores
+    
+    def insert(self, v_scalar: float, y_scalar: float) -> None:
+        """插入新数据点，必要时移除最低价值的点。"""
         self.total_adds += 1
-        item_to_process = (v_scalar, y_scalar)
-
-        for i in range(self.num_levels):
-            if item_to_process is None:
-                break
-
-            # 根据稀疏因子判断当前层是否接收此数据点
-            if self.sparsity_factors[i] > 0 and self.total_adds % self.sparsity_factors[i] == 0:
-                current_level_deque = self.levels[i]
-                
-                # 如果缓冲区已满，挤出最旧的数据点，传递给下一层处理
-                next_item_to_process = current_level_deque.popleft() if len(current_level_deque) == current_level_deque.maxlen else None
-                current_level_deque.append(item_to_process)
-                item_to_process = next_item_to_process
-            else:
-                # 如果不满足稀疏条件，此数据点原封不动地传递给下一层
-                pass
-
-    def get_training_set(self):
-        """
-        获取用于训练的完整数据集。
-        它会合并所有层级的数据并去除重复项。
-        """
-        all_data = []
-        for level_deque in self.levels:
-            all_data.extend(list(level_deque))
-        # 使用字典去重，同时保持数据点的插入顺序
-        return list(dict.fromkeys(all_data))
+        
+        # 检查是否与现有点太接近（重复）
+        novelty = self._compute_novelty(v_scalar)
+        if novelty < 0.05 and len(self.data) >= self.max_size // 2:
+            # 太接近现有点，跳过插入
+            return
+        
+        new_point = (v_scalar, y_scalar, self.total_adds)
+        
+        if len(self.data) < self.max_size:
+            self.data.append(new_point)
+        else:
+            # 缓冲区已满，找到并替换最低价值的点
+            scores = self._compute_scores()
+            min_idx = np.argmin(scores)
+            self.data[min_idx] = new_point
+    
+    def get_training_set(self) -> list:
+        """获取用于训练的数据集（不含时间戳）。"""
+        return [(p[0], p[1]) for p in self.data]
     
     def reset(self):
-        """清空所有内部缓冲区。"""
-        # *** 核心修复 2: 使用正确的属性名 (self.levels) 和 (self.capacities) ***
-        self.levels = [deque(maxlen=cap) for cap in self.capacities]
-        # *** 核心修复 3: 同时重置数据点计数器，确保完全重置 ***
+        """清空缓冲区。"""
+        self.data = []
         self.total_adds = 0
-        print("  - MultiLevelBuffer has been reset.")
+        print("  - InformationGainBuffer has been reset.")
+    
+    def __len__(self):
+        return len(self.data)
 # =================================================================================
 # 2. 训练历史记录器
 # =================================================================================
@@ -234,18 +258,17 @@ class IncrementalGP:
         self.device = torch.device(config.get('main_process_device', 'cpu'))
         self.epsilon = 1e-7
         
-        # 数据缓冲区
-        self.buffer = MultiLevelBuffer(config['buffer_level_capacities'], config['buffer_level_sparsity'])
-        # --- 新增：一个用于存储所有历史数据的完整缓冲区 (无稀疏) ---
-        # capacities = np.array(config['buffer_level_capacities'])
-        # sparsity = np.array(config['buffer_level_sparsity'])
-        # max_history_size = int(np.sum(capacities * sparsity))
-        # self.full_history_buffer = deque(maxlen=max_history_size)
+        # 数据缓冲区 - 基于信息增益评分的智能缓冲区
+        max_size = config.get('buffer_max_size', 30)
+        novelty_weight = config.get('novelty_weight', 0.7)
+        self.buffer = InformationGainBuffer(max_size, novelty_weight)
 
-        # EMA (指数移动平均) 归一化统计量
-        self.ema_alpha = config.get('ema_alpha', 0.05)
-        self.v_mean_ema, self.v_var_ema = 0.0, 1.0
-        self.r_mean_ema, self.r_var_ema = 0.0, 1.0
+        # 批量归一化统计量（每次从缓冲区计算，避免EMA漂移）
+        self._cached_norm_stats = None  # (v_mean, v_std, r_mean, r_std)
+        
+        # 预测误差追踪
+        self.recent_prediction_errors = deque(maxlen=20)
+        self.error_threshold = config.get('error_threshold', 0.15)  # m/s^2
         
         # 主进程中用于快速预测的“实时”模型
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(self.device)
@@ -266,30 +289,36 @@ class IncrementalGP:
         self.updates_since_last_train += 1
     
     def get_and_normalize_data(self):
-        """获取并归一化所有数据，用于派发给后台训练和更新主模型。"""
+        """获取并归一化所有数据。使用批量统计量避免EMA漂移，确保训练和预测一致。"""
         training_data_raw = self.buffer.get_training_set()
-        if not training_data_raw or len(training_data_raw) < 2: return None, None
+        if not training_data_raw or len(training_data_raw) < 2: 
+            return None, None
         
         raw_v = np.array([p[0] for p in training_data_raw], dtype=np.float32)
         raw_r = np.array([p[1] for p in training_data_raw], dtype=np.float32)
         
-        # 更新EMA统计量
-        num_points = len(raw_v)
-        if num_points < self.config.get('min_points_for_ema', 30):
-            v_mean, v_var = np.mean(raw_v), np.var(raw_v)
-            r_mean, r_var = np.mean(raw_r), np.var(raw_r)
-        else:
-            self.v_mean_ema = (1 - self.ema_alpha) * self.v_mean_ema + self.ema_alpha * np.mean(raw_v)
-            self.v_var_ema = (1 - self.ema_alpha) * self.v_var_ema + self.ema_alpha * np.var(raw_v)
-            self.r_mean_ema = (1 - self.ema_alpha) * self.r_mean_ema + self.ema_alpha * np.mean(raw_r)
-            self.r_var_ema = (1 - self.ema_alpha) * self.r_var_ema + self.ema_alpha * np.var(raw_r)
-            v_mean, v_var = self.v_mean_ema, self.v_var_ema
-            r_mean, r_var = self.r_mean_ema, self.r_var_ema
+        # 使用批量统计量（直接从当前缓冲区计算，确保训练和预测一致）
+        v_mean, v_std = np.mean(raw_v), np.std(raw_v) + self.epsilon
+        r_mean, r_std = np.mean(raw_r), np.std(raw_r) + self.epsilon
+        
+        # 缓存归一化统计量供预测时使用
+        self._cached_norm_stats = (v_mean, v_std, r_mean, r_std)
         
         # 使用统计量进行归一化
-        train_x_norm = torch.tensor((raw_v - v_mean) / np.sqrt(v_var + self.epsilon), device=self.device).view(-1, 1)
-        train_y_norm = torch.tensor((raw_r - r_mean) / np.sqrt(r_var + self.epsilon), device=self.device)
+        train_x_norm = torch.tensor((raw_v - v_mean) / v_std, device=self.device).view(-1, 1)
+        train_y_norm = torch.tensor((raw_r - r_mean) / r_std, device=self.device)
         return train_x_norm, train_y_norm
+    
+    def record_prediction_error(self, error: float):
+        """记录预测误差用于自适应重训练触发。"""
+        self.recent_prediction_errors.append(abs(error))
+    
+    def should_trigger_retrain_by_error(self) -> bool:
+        """检查是否因预测误差过大而需要重训练。"""
+        if len(self.recent_prediction_errors) < 10:
+            return False
+        recent_errors = list(self.recent_prediction_errors)[-10:]
+        return np.mean(recent_errors) > self.error_threshold
 
     def get_current_state_for_worker(self):
         """获取当前模型的状态字典，准备发送给worker。"""
@@ -343,22 +372,17 @@ class IncrementalGP:
         self.is_trained_once = False
         self.is_training_in_progress = False
         self.updates_since_last_train = 0
-        # 修复: 重置为一个新的空历史对象，而不是None
         self.last_training_history = TrainingHistory()
 
-        # 3. 重置归一化统计数据 (EMA)
-        self.v_mean_ema = 0.0
-        self.v_var_ema = 1.0
-        self.r_mean_ema = 0.0
-        self.r_var_ema = 1.0
-        # self.ema_counter = 0 # 移除未使用的变量
+        # 3. 重置归一化统计缓存和误差追踪
+        self._cached_norm_stats = None
+        self.recent_prediction_errors.clear()
 
-        # 4. *** 核心修复: 以正确的顺序重新初始化模型和似然 ***
-        #    必须先创建新的likelihood，再用它来创建新的model。
+        # 4. 重新初始化模型和似然
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(self.device)
         self.model = ExactGPModel(None, None, self.likelihood).to(self.device)
         
-        print(f"  - IncrementalGP for Dim has been fully reset.")
+        print(f"  - IncrementalGP for Dim-{self.dim_idx} has been fully reset.")
 
 # =================================================================================
 # 5. 管理器：负责编排所有组件
@@ -438,6 +462,10 @@ class IncrementalGPManager:
             # 条件2: 定期再训练
             elif gp.is_trained_once and gp.updates_since_last_train >= self.config.get('refit_hyperparams_interval', 100):
                 should_trigger = True
+            # 条件3: 误差触发训练（当预测误差过大时）
+            elif gp.is_trained_once and gp.should_trigger_retrain_by_error():
+                should_trigger = True
+                print(f"⚡ [管理器] Dim-{i}: 预测误差过大，触发误差驱动重训练")
             
             if should_trigger:
                 train_x, train_y = gp.get_and_normalize_data()
@@ -522,14 +550,21 @@ class IncrementalGPManager:
         variances = np.ones_like(means, dtype=float)
 
         for i, gp in enumerate(self.gps):
-            if not gp.is_trained_once: continue
+            if not gp.is_trained_once: 
+                continue
+            
+            # 检查是否有缓存的归一化统计量
+            if gp._cached_norm_stats is None:
+                continue
+            
+            v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
             
             v_query = np.atleast_1d(query_velocities[:, i])
-            if v_query.size == 0: continue
+            if v_query.size == 0: 
+                continue
             
-            v_std_ema = np.sqrt(gp.v_var_ema + gp.epsilon)
-            v_query_norm = (v_query - gp.v_mean_ema) / v_std_ema
-            # 最终修复：通过访问模型的一个参数来安全地获取其dtype
+            # 使用缓存的批量统计量进行归一化（与训练一致）
+            v_query_norm = (v_query - v_mean) / v_std
             model_dtype = next(gp.model.parameters()).dtype
             v_query_torch = torch.tensor(v_query_norm, device=gp.device, dtype=model_dtype).view(-1, 1)
             
@@ -540,9 +575,9 @@ class IncrementalGPManager:
                 mean_norm = preds.mean.cpu().numpy()
                 var_norm = preds.variance.cpu().numpy()
             
-            r_std_ema = np.sqrt(gp.r_var_ema + gp.epsilon)
-            means[:, i] = mean_norm * r_std_ema + gp.r_mean_ema
-            variances[:, i] = var_norm * (gp.r_var_ema + gp.epsilon)
+            # 反归一化
+            means[:, i] = mean_norm * r_std + r_mean
+            variances[:, i] = var_norm * (r_std ** 2)
             
         return means, np.maximum(variances, 1e-9)
 

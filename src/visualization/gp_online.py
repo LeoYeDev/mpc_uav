@@ -102,15 +102,15 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                        label='Data', zorder=4)
 
         # b) 绘制GP在训练数据范围内的拟合曲线
-        if train_x_denorm is not None and train_x_denorm.size > 0:
+        if train_x_denorm is not None and train_x_denorm.size > 0 and gp._cached_norm_stats is not None:
+            v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
             x_min_plot, x_max_plot = train_x_denorm.min(), train_x_denorm.max()
             range_ext = (x_max_plot - x_min_plot) * 0.15
             if abs(range_ext) < 1e-4: range_ext = 0.5
             x_dense_denorm = np.linspace(x_min_plot - range_ext, x_max_plot + range_ext, 200)
             
-            # 为每个独立GP执行完整的预测流程
-            v_std_ema = np.sqrt(gp.v_var_ema + gp.epsilon)
-            x_dense_norm = (x_dense_denorm - gp.v_mean_ema) / v_std_ema
+            # 使用缓存的批量统计量进行归一化
+            x_dense_norm = (x_dense_denorm - v_mean) / v_std
             model_dtype = next(gp.model.parameters()).dtype
             x_dense_torch = torch.tensor(x_dense_norm, device=gp.device, dtype=model_dtype).view(-1, 1)
 
@@ -121,9 +121,9 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                 mean_norm = preds.mean.cpu().numpy()
                 var_norm = preds.variance.cpu().numpy()
         
-            r_std_ema = np.sqrt(gp.r_var_ema + gp.epsilon)
-            fit_mean_dim_i = mean_norm * r_std_ema + gp.r_mean_ema
-            fit_var_dim_i = var_norm * (gp.r_var_ema + gp.epsilon)
+            # 反归一化
+            fit_mean_dim_i = mean_norm * r_std + r_mean
+            fit_var_dim_i = var_norm * (r_std ** 2)
             fit_std_dim_i = np.sqrt(np.maximum(fit_var_dim_i, 1e-9))
 
             ax.plot(x_dense_denorm, fit_mean_dim_i, color=colors['fit_mean'], lw=2, label='GP Fit', zorder=3) # 增加线宽
@@ -208,14 +208,15 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                        label='Data', zorder=4)
 
         # b) 绘制GP拟合曲线
-        if 'train_x_denorm' in locals() and train_x_denorm.size > 0:
+        if 'train_x_denorm' in locals() and train_x_denorm.size > 0 and gp._cached_norm_stats is not None:
+            v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
             x_min_plot, x_max_plot = train_x_denorm.min(), train_x_denorm.max()
             range_ext = (x_max_plot - x_min_plot) * 0.15
             if abs(range_ext) < 1e-4: range_ext = 0.5
             x_dense_denorm = np.linspace(x_min_plot - range_ext, x_max_plot + range_ext, 200)
             
-            v_std_ema = np.sqrt(gp.v_var_ema + gp.epsilon)
-            x_dense_norm = (x_dense_denorm - gp.v_mean_ema) / v_std_ema
+            # 使用缓存的批量统计量进行归一化
+            x_dense_norm = (x_dense_denorm - v_mean) / v_std
             model_dtype = next(gp.model.parameters()).dtype
             x_dense_torch = torch.tensor(x_dense_norm, device=gp.device, dtype=model_dtype).view(-1, 1)
 
@@ -224,9 +225,9 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                 mean_norm = preds.mean.cpu().numpy()
                 var_norm = preds.variance.cpu().numpy()
         
-            r_std_ema = np.sqrt(gp.r_var_ema + gp.epsilon)
-            fit_mean_dim_i = mean_norm * r_std_ema + gp.r_mean_ema
-            fit_std_dim_i = np.sqrt(np.maximum(var_norm * (gp.r_var_ema + gp.epsilon), 1e-9))
+            # 反归一化
+            fit_mean_dim_i = mean_norm * r_std + r_mean
+            fit_std_dim_i = np.sqrt(np.maximum(var_norm * (r_std ** 2), 1e-9))
 
             ax_x.plot(x_dense_denorm, fit_mean_dim_i, color=colors['fit_mean'], lw=1.0, label='GP Fit', zorder=3)
             ax_x.fill_between(x_dense_denorm, fit_mean_dim_i - 1.96 * fit_std_dim_i, fit_mean_dim_i + 1.96 * fit_std_dim_i,

@@ -449,26 +449,15 @@ if __name__ == '__main__':
     plot_sim = SimpleSimConfig.custom_sim_gui
     noisy_sim_options = SimpleSimConfig.simulation_disturbances
     
-    #加入双GP模型
-    model_vec = [{"simulation_options": noisy_sim_options,
-                       "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}}]
+    # 只运行AR-MPC模型（在线GP增量修正）
+    model_vec = [{
+        "simulation_options": noisy_sim_options,
+        "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}
+    }]
     legends = ['AR']
-
-    #加入名义模型和完美模型
-    model_vec += [{"simulation_options": noisy_sim_options, "model": None}]
-    legends += ['nominal']
-
-    # --- 修改 2: 准备用于在内存中保存绘图数据的变量 ---
-    # --- 修改 2: 准备用于在内存中保存绘图数据的变量 ---
-    # all_results_data = {} # Deprecated: Refactored to use DataLogger
+    
+    # 初始化数据记录器
     experiment_logger = DataLogger()
-    # --- 修改结束 ---
-    # --- 修改结束 ---
-
-    #加入单GP模型
-    model_vec += [{"simulation_options": noisy_sim_options,
-                       "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': False}}]
-    legends += ['SGP']
     
     y_label = "RMSE [m]"
     # Define result vectors
