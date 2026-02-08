@@ -8,3 +8,13 @@ c_generated_code/
 *.egg-info/
 dist/
 build/
+
+# Media and Output Files
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.mat
+.vscode/
+__pycache__/
