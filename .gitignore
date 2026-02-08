@@ -67,3 +67,6 @@ src/**/*.TIFF
 test_*.pdf
 
 acados_models/
+
+#paper
+Manuscript_anonymous.pdf

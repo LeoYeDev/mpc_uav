@@ -15,7 +15,7 @@
 
 ### 基于项目
 
-本项目基于 [LeoYeDev/data_driven_mpc](https://github.com/LeoYeDev/data_driven_mpc) 改进开发。
+本项目基于 [uzh-rpg/data_driven_mpc](https://github.com/uzh-rpg/data_driven_mpc) 改进开发。
 
 ---
 
