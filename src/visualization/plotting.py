@@ -604,7 +604,7 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
     fig_path = os.path.join(PathConfig.FIGURES_DIR, 'mse_tracking_experiment_plot')
     plt.savefig(fig_path + '.pdf', bbox_inches='tight')
     plt.savefig(fig_path + '.svg', bbox_inches='tight')
-    plt.show()
+    plt.close(fig_rmse)  # 静默保存，不弹出窗口
 
     # --- 修复第二个图 (t_opt) 的绘图和图例逻辑 ---
     if t_opt is not None:
@@ -631,7 +631,7 @@ def mse_tracking_experiment_plot(v_max, mse, traj_type_vec, train_samples_vec, l
         fig_path = os.path.join(PathConfig.FIGURES_DIR, 't_opt_tracking_experiment_plot')
         plt.savefig(fig_path + '.pdf', bbox_inches='tight')
         plt.savefig(fig_path + '.svg', bbox_inches='tight')
-        plt.show()
+        plt.close(fig_time)  # 静默保存，不弹出窗口
 
 def load_past_experiments():
 

@@ -189,11 +189,8 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     out_online_gp_manager = None  # 用于快照可视化的在线GP管理器
     visualized_all = False
 
-    if collect_online_gp_data_flag and use_online_gp_ject: 
-        print("\n" + "="*50)
-        print("在线GP模块已激活")
-        print("="*50)
-        # 使用我们最终确定的、更稳健的配置
+    if collect_online_gp_data_flag and use_online_gp_ject:
+        pass  # 静默激活
         
 
     while (time.time() - start_time) < max_simulation_time and current_idx < reference_traj.shape[0]:
@@ -311,7 +308,6 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
             if total_sim_time >= 9.7 and not snapshot_visualization_done:
                 # 检查是否有任何一个GP维度已经训练过了
                 if any(gp.is_trained_once for gp in online_gp_manager.gps):
-                    print(f"\n📸 [快照] 仿真时间 {total_sim_time:.2f}s, 生成当前GP回归效果快照...")
                     out_online_gp_manager = online_gp_manager
                     out_x_pred = x_pred
                     out_total_sim_time = total_sim_time
@@ -471,9 +467,6 @@ if __name__ == '__main__':
         use_online_gp_ject = False
         if model_type["model"] and model_type["model"].get("use_online_gp", False):
             use_online_gp_ject = True
-            print("\n" + "="*50)
-            print(f"Initializing Online GP Manager...")
-            print("="*50)
             online_gp_manager = IncrementalGPManager(config=OnlineGPConfig().to_dict())
         if model_type["model"] is not None:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"], **model_type["model"])
@@ -514,13 +507,10 @@ if __name__ == '__main__':
                         'x_executed': x_executed,
                     }
                     experiment_logger.log(controller_name, result_data)
-                    print(f"💾 结果已为控制器 '{controller_name}' 存储在内存中。")
                 # --- 修改结束 ---
         # --- 核心修改 3: 在模型的所有速度测试结束后，再关闭管理器 ---
         if online_gp_manager:
-            print(f"\n模型 '{legends[n_train_id]}' 的所有速度测试完成，正在关闭在线GP管理器...")
             online_gp_manager.shutdown()
-            print("-" * 50)
 
     _, err_file, v_file, t_file = get_experiment_files()
     np.save(err_file, mse)
@@ -528,9 +518,7 @@ if __name__ == '__main__':
     np.save(t_file, t_opt)
     
     # --- 修改 6: 在所有实验结束后，调用新的对比绘图函数 ---
-    print("\n" + "="*60)
-    print("所有仿真已完成，正在生成最终的论文级跟踪误差对比图...")
-    print("="*60)
+    # 生成绘图（静默模式）
 
     # plot_combined_results(combined_plot_data)
 

@@ -138,7 +138,6 @@ class InformationGainBuffer:
         """清空缓冲区。"""
         self.data = []
         self.total_adds = 0
-        print("  - InformationGainBuffer has been reset.")
     
     def __len__(self):
         return len(self.data)
@@ -382,7 +381,7 @@ class IncrementalGP:
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(self.device)
         self.model = ExactGPModel(None, None, self.likelihood).to(self.device)
         
-        print(f"  - IncrementalGP for Dim-{self.dim_idx} has been fully reset.")
+
 
 # =================================================================================
 # 5. 管理器：负责编排所有组件
@@ -409,7 +408,7 @@ class IncrementalGPManager:
         # 新增: 用于存储后台训练耗时的列表
         self.training_durations = []
         
-        print(f"[管理器] 初始化... 正在为 {self.num_dimensions} 个维度启动后台工作进程。")
+        # 启动后台工作进程（静默）
         for i in range(self.num_dimensions):
             worker_config = {
                 'n_iter': config.get('worker_train_iters', 150),
@@ -417,10 +416,9 @@ class IncrementalGPManager:
                 'device_str': config.get('worker_device_str', 'cpu'),
             }
             worker = Process(target=gp_training_worker, args=(self.task_queues[i], self.result_queue, self.stop_event, worker_config, i))
-            worker.daemon = True # 设置为守护进程，主进程退出时它会自动终止
+            worker.daemon = True
             worker.start()
             self.workers.append(worker)
-        print("[管理器] 所有后台工作进程已成功启动。")
         
         # 注册自动清理
         atexit.register(self.shutdown)
@@ -465,12 +463,10 @@ class IncrementalGPManager:
             # 条件3: 误差触发训练（当预测误差过大时）
             elif gp.is_trained_once and gp.should_trigger_retrain_by_error():
                 should_trigger = True
-                print(f"⚡ [管理器] Dim-{i}: 预测误差过大，触发误差驱动重训练")
-            
+
             if should_trigger:
                 train_x, train_y = gp.get_and_normalize_data()
                 if train_x is not None:
-                    print(f"🧠 [管理器] Dim-{i}: 满足训练条件 ({num_training_points}个点), 正在派发任务至后台...")
                     current_state = gp.get_current_state_for_worker()
                     task = (train_x, train_y, current_state)
                     self.task_queues[i].put(task)
@@ -480,7 +476,6 @@ class IncrementalGPManager:
         """非阻塞地检查并应用已完成的训练结果。"""
         try:
             dim_idx, new_state_dict, history, duration = self.result_queue.get_nowait()
-            print(f"🎉 [管理器] 收到 Worker-{dim_idx} 的训练结果！耗时: {duration:.2f}s。正在更新实时模型...")
             # 新增: 记录训练时长
             self.training_durations.append(duration)
             self.gps[dim_idx].load_new_state_from_worker(new_state_dict, history)
@@ -498,9 +493,8 @@ class IncrementalGPManager:
         for i, worker in enumerate(self.workers):
             worker.join(timeout=2.0)
             if worker.is_alive():
-                print(f"[管理器] Worker-{i} 未能正常关闭，将强制终止。")
                 worker.terminate()
-        print("[管理器] 所有后台工作进程已成功关闭。")
+        # 静默关闭
     
     def _clear_queue(self, q):
         """安全地清空一个多进程队列。"""
@@ -515,24 +509,18 @@ class IncrementalGPManager:
        重置管理器及其所有内部GP实例的状态，为一次新的独立实验运行做准备。
        这会清空所有数据缓冲区、重置模型、并清空所有通信队列。
        """
-       
-       print("\n🔄 Resetting IncrementalGPManager state for new experiment run...")
-       
-       # 1. 委托每个GP实例进行重置 (清空缓冲区, 重置模型和状态)
+       # 委托每个GP实例进行重置 (清空缓冲区, 重置模型和状态)
        for gp in self.gps:
            gp.reset()
            gp.is_trained_once = False
            
-       # 2. *** 核心修复: 清空所有任务队列和结果队列 ***
-       print("  - Clearing communication queues...")
+       # 清空所有任务队列和结果队列
        for q in self.task_queues:
            self._clear_queue(q)
        self._clear_queue(self.result_queue)
        
-       # 3. *** 核心修复: 重置性能统计列表 ***
-       self.training_durations = []
-       
-       print("✅ Manager reset complete.") 
+       # 重置性能统计列表
+       self.training_durations = [] 
 
     def predict(self, query_velocities: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

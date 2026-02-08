@@ -162,7 +162,7 @@ def plot_combined_results(combined_plot_data):
     plt.savefig(fig_path + '.pdf', bbox_inches="tight", dpi=600)
     plt.savefig(fig_path + '.svg', bbox_inches="tight", dpi=600)
     
-    plt.show()
+    plt.close(fig)  # 静默保存，不弹出窗口
 # ==============================================================================
 # --- 新增函数：用于生成论文级的多控制器跟踪误差对比图 ---
 # ==============================================================================
@@ -251,5 +251,5 @@ def plot_tracking_error_comparison(results_data, controller_map):
     fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'tracking_error_comparison')
     plt.savefig(fig_path + '.pdf', bbox_inches="tight")
     plt.savefig(fig_path + '.svg', bbox_inches="tight")
-    plt.show()
+    plt.close(fig)  # 静默保存，不弹出窗口
 

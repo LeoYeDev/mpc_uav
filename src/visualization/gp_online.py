@@ -181,10 +181,9 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
     fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'online_gp_snapshot')
     plt.savefig(fig_path + '.pdf', bbox_inches="tight")
     plt.savefig(fig_path + '.svg', bbox_inches="tight")
-    plt.show(block=False)
+    plt.close(fig)  # 静默保存，不弹出窗口
 
     # --- 3. 任务二：绘制独立的、仅含X轴的精美快照 ---
-    print("\n--- 正在生成仅X轴的GP快照... ---")
     set_publication_style(base_size=9)
     fig_x, ax_x = plt.subplots(1, 1, figsize=(3, 2), dpi=150)
 
@@ -255,5 +254,4 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
     fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'online_gp_snapshot_x_only')
     plt.savefig(fig_path + '.pdf', bbox_inches="tight")
     plt.savefig(fig_path + '.svg', bbox_inches="tight")
-    plt.show(block=False)
-    print("--- 仅X轴图已生成。---")
+    plt.close(fig_x)  # 静默保存，不弹出窗口
