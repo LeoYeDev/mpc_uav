@@ -272,10 +272,13 @@ class Quad3DMPC:
             
             sym_ode_params_combined = cs.vertcat(*integrator_param_inputs)
             dae = {'x': sym_x_acados, 'p': sym_ode_params_combined, 'ode': ode_expr_acados}
-            opts_integrator = {'tf': integration_period, 'simplify': True, 'number_of_finite_elements': 1} 
+            # Fix for CasADi deprecation warning: pass t0 and tf as positional arguments
+            # opts_integrator = {'tf': integration_period, 'simplify': True, 'number_of_finite_elements': 1} 
+            opts_integrator = {'simplify': True, 'number_of_finite_elements': 1}
             
             unique_integrator_name = f'intg_{acados_model_definition.name}_{str(integration_period).replace(".","p")}_{len(self._cached_integrators)}'
-            intg = cs.integrator(unique_integrator_name, 'rk', dae, opts_integrator)
+            # New signature: name, solver, dae, t0, tf, options
+            intg = cs.integrator(unique_integrator_name, 'rk', dae, 0.0, integration_period, opts_integrator)
             self._cached_integrators[integrator_key] = intg
         
         # ========================================================================

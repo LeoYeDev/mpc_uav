@@ -8,11 +8,20 @@ Run: python src/experiments/ablation_experiment.py --speed 2.7
 """
 import numpy as np
 import multiprocessing
+import os
+import matplotlib.pyplot as plt
 from dataclasses import replace
 
 from config.configuration_parameters import SimpleSimConfig
 from config.gp_config import OnlineGPConfig
 from config.paths import DEFAULT_MODEL_VERSION, DEFAULT_MODEL_NAME
+
+import warnings
+try:
+    from gpytorch.utils.warnings import NumericalWarning
+    warnings.simplefilter("ignore", NumericalWarning)
+except ImportError:
+    pass
 
 # Import from comparative_experiment
 from src.experiments.comparative_experiment import prepare_quadrotor_mpc, main as run_tracking
@@ -30,62 +39,62 @@ def get_ablation_configs():
     return {
         # Baseline: Nominal MPC (no GP at all)
         "nominal": {
-            "description": "Nominal MPC (无GP)",
-            "use_gp": False,
+            "description": "Nominal MPC",
+            "use_offline_gp": False,
             "use_online_gp": False,
             "gp_config": None,
             "solver_options": {},
         },
         
-        # (b) Without Online GP - Static GP only
-        "static_only": {
-            "description": "(b) 仅离线GP",
-            "use_gp": True,
+        # (b) Without Online GP - Static GP only (SGP-MPC)
+        "sgp_mpc": {
+            "description": "SGP-MPC (Offline Only)",
+            "use_offline_gp": True,
             "use_online_gp": False,
             "gp_config": None,
             "solver_options": {},
         },
         
-        # (c) Without IVS - Use FIFO buffer
-        "fifo_buffer": {
-            "description": "(c) FIFO缓冲区",
-            "use_gp": True,
+        # (c) Without IVS - Use FIFO buffer (AR-MPC with FIFO)
+        "ar_mpc_fifo": {
+            "description": "AR-MPC (FIFO Buffer)",
+            "use_offline_gp": True,
             "use_online_gp": True,
             "gp_config": replace(base_gp_config, buffer_type='fifo', variance_scaling_alpha=1.0),
             "solver_options": {"variance_scaling_alpha": 1.0},
         },
         
-        # (d) Without Variance mechanism (alpha=0)
-        "no_variance": {
-            "description": "(d) 无方差机制 (α=0)",
-            "use_gp": True,
+        # (d) Without Variance mechanism (alpha=0) (AR-MPC No Var)
+        "ar_mpc_no_var": {
+            "description": "AR-MPC (No Variance)",
+            "use_offline_gp": True,
             "use_online_gp": True,
             "gp_config": replace(base_gp_config, variance_scaling_alpha=0.0),
             "solver_options": {"variance_scaling_alpha": 0.0},
         },
         
-        # Full System (all features enabled, α=1)
-        "full_system": {
-            "description": "完整系统 (α=1)",
-            "use_gp": True,
+        # Full System (all features enabled, α=1) (AR-MPC)
+        "ar_mpc": {
+            "description": "AR-MPC (Proposed)",
+            "use_offline_gp": True,
             "use_online_gp": True,
             "gp_config": replace(base_gp_config, variance_scaling_alpha=1.0),
             "solver_options": {"variance_scaling_alpha": 1.0},
         },
         
         # Sensitivity: alpha = 0.5
-        "alpha_05": {
-            "description": "α=0.5 (轻度保守)",
-            "use_gp": True,
+        "sensitivity_alpha_05": {
+            "description": "AR-MPC (Alpha=0.5)",
+            "use_offline_gp": True,
             "use_online_gp": True,
             "gp_config": replace(base_gp_config, variance_scaling_alpha=0.5),
             "solver_options": {"variance_scaling_alpha": 0.5},
         },
         
         # Sensitivity: alpha = 2.0
-        "alpha_20": {
-            "description": "α=2.0 (高度保守)",
-            "use_gp": True,
+        "sensitivity_alpha_20": {
+            "description": "AR-MPC (Alpha=2.0)",
+            "use_offline_gp": True,
             "use_online_gp": True,
             "gp_config": replace(base_gp_config, variance_scaling_alpha=2.0),
             "solver_options": {"variance_scaling_alpha": 2.0},
@@ -99,45 +108,49 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
     """
     simulation_options = SimpleSimConfig.simulation_disturbances
     
-    # 根据配置决定是否使用GP
-    version = DEFAULT_MODEL_VERSION if config["use_gp"] else None
-    name = DEFAULT_MODEL_NAME if config["use_gp"] else None
+    # Configure Offline Model Loading
+    # If use_offline_gp is True, we load the pre-trained SGP model.
+    version = DEFAULT_MODEL_VERSION if config["use_offline_gp"] else None
+    name = DEFAULT_MODEL_NAME if config["use_offline_gp"] else None
+    reg_type = "gp" if config["use_offline_gp"] else None
     
-    # 使用唯一的quad_name避免缓存冲突
+    # Use unique quad_name to avoid ACADOS solver cache conflicts
     quad_name = f"my_quad_abl_{config_name}"
     
-    # 准备MPC
+    # Prepare MPC Controller
     quad_mpc = prepare_quadrotor_mpc(
         simulation_options,
         version=version,
         name=name,
-        reg_type="gp" if config["use_gp"] else None,
+        reg_type=reg_type,
         quad_name=quad_name,
         use_online_gp=config["use_online_gp"]
     )
     
-    # 如果启用在线GP，初始化管理器
+    # Prepare Online GP Manager if enabled
     online_gp_manager = None
     if config["use_online_gp"] and config["gp_config"] is not None:
         online_gp_manager = IncrementalGPManager(config=config["gp_config"].to_dict())
     
-    # 运行跟踪实验
+    # Run Tracking Experiment
     try:
+        # Note: use_gp_ject in main() corresponds to whether we inject the *offline* GP
+        # use_online_gp_ject corresponds to whether we inject the *online* GP
         result = run_tracking(
             quad_mpc=quad_mpc,
             av_speed=speed,
             reference_type=trajectory_type,
             plot=False,
             use_online_gp_ject=config["use_online_gp"],
-            use_wind=True,  # 使用风模型
-            use_gp_ject=config["use_gp"],
+            use_wind=True,  # Always use wind for ablation to show adaptation
+            use_gp_ject=config["use_offline_gp"], 
             online_gp_manager=online_gp_manager
         )
         
-        # 解析返回值
+        # Parse results
         rmse, max_vel, mean_opt_time, _, _, _ = result
         
-        # 清理
+        # Cleanup
         if online_gp_manager:
             online_gp_manager.shutdown()
         
@@ -145,6 +158,8 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
     
     except Exception as e:
         print(f"  Error in {config_name}: {e}")
+        import traceback
+        traceback.print_exc()
         if online_gp_manager:
             online_gp_manager.shutdown()
         return None
@@ -154,35 +169,41 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     """
     Generate and save ablation result visualizations.
     """
-    import matplotlib.pyplot as plt
-    import os
-    
     os.makedirs(save_dir, exist_ok=True)
     
-    # 设置中英文字体
-    plt.rcParams['font.family'] = ['DejaVu Sans', 'SimHei']
-    plt.rcParams['axes.unicode_minus'] = False
-    
+    # Use default font (English)
+    plt.style.use('default')
+    # Try to use seaborn style if available for better aesthetics
+    # Fix for MatplotlibDeprecationWarning
+    for style in ['seaborn-v0_8-whitegrid', 'seaborn-whitegrid']:
+        try:
+            plt.style.use(style)
+            break
+        except:
+            pass
+
     if not results:
         print("No results to plot")
         return
     
-    # 准备数据
+    # Prepare data
     names = [r['description'] for r in results.values()]
     rmses = [r['rmse'] for r in results.values()]
+    # Defined colors
     colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6', '#1ABC9C', '#34495E']
     
-    # ========== 图1: RMSE柱状图 ==========
-    fig1, ax1 = plt.subplots(figsize=(10, 6))
+    # ========== Figure 1: RMSE Bar Chart ==========
+    fig1, ax1 = plt.subplots(figsize=(12, 6))
     bars = ax1.bar(range(len(names)), rmses, color=colors[:len(names)], edgecolor='black', linewidth=1.2)
     
     ax1.set_xticks(range(len(names)))
-    ax1.set_xticklabels(names, rotation=45, ha='right', fontsize=10)
+    ax1.set_xticklabels(names, rotation=30, ha='right', fontsize=10)
     ax1.set_ylabel('RMSE (m)', fontsize=12)
     ax1.set_title(f'Ablation Study Results (Speed: {speed} m/s)', fontsize=14)
-    ax1.set_ylim(0, max(rmses) * 1.2)
+    if rmses:
+        ax1.set_ylim(0, max(rmses) * 1.2)
     
-    # 添加数值标签
+    # Add value labels
     for bar, rmse in zip(bars, rmses):
         ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.005, 
                 f'{rmse:.3f}', ha='center', va='bottom', fontsize=9)
@@ -196,24 +217,27 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     print(f"Saved: {fig1_path}")
     plt.close(fig1)
     
-    # ========== 图2: 相对改善柱状图 ==========
+    # ========== Figure 2: Relative Improvement Chart ==========
     if 'nominal' in results:
         baseline = results['nominal']['rmse']
         improvements = [(1 - r['rmse']/baseline) * 100 for r in results.values()]
         
-        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        fig2, ax2 = plt.subplots(figsize=(12, 6))
         bars2 = ax2.bar(range(len(names)), improvements, color=colors[:len(names)], 
                         edgecolor='black', linewidth=1.2)
         
         ax2.set_xticks(range(len(names)))
-        ax2.set_xticklabels(names, rotation=45, ha='right', fontsize=10)
+        ax2.set_xticklabels(names, rotation=30, ha='right', fontsize=10)
         ax2.set_ylabel('Improvement over Nominal (%)', fontsize=12)
         ax2.set_title(f'Relative Improvement by Configuration', fontsize=14)
         
-        # 添加数值标签
+        # Add value labels
         for bar, imp in zip(bars2, improvements):
-            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
-                    f'{imp:.1f}%', ha='center', va='bottom', fontsize=9)
+            # Place label above bar for positive, below for negative
+            y_pos = bar.get_height() + 1 if imp >= 0 else bar.get_height() - 5
+            va = 'bottom' if imp >= 0 else 'top'
+            ax2.text(bar.get_x() + bar.get_width()/2, y_pos, 
+                    f'{imp:.1f}%', ha='center', va=va, fontsize=9)
         
         ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
         ax2.grid(axis='y', alpha=0.3)
@@ -224,20 +248,23 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
         print(f"Saved: {fig2_path}")
         plt.close(fig2)
     
-    # ========== 图3: α敏感性分析 ==========
-    alpha_configs = {k: v for k, v in results.items() if 'alpha' in k or k in ['no_variance', 'full_system']}
-    if len(alpha_configs) > 1:
-        # 提取α值和对应RMSE
+    # ========== Figure 3: Alpha Sensitivity Analysis ==========
+    # Filter keys containing 'alpha' or the boundary cases
+    alpha_keys = [k for k in results.keys() if 'alpha' in k or k in ['ar_mpc_no_var', 'ar_mpc']]
+    
+    if len(alpha_keys) > 1:
+        # Extract alpha values and corresponding RMSEs
         alpha_data = []
-        for name, data in alpha_configs.items():
-            if name == 'no_variance':
-                alpha_data.append((0.0, data['rmse']))
-            elif name == 'full_system':
-                alpha_data.append((1.0, data['rmse']))
+        for name in alpha_keys:
+            rmse = results[name]['rmse']
+            if name == 'ar_mpc_no_var':
+                alpha_data.append((0.0, rmse))
+            elif name == 'ar_mpc':
+                alpha_data.append((1.0, rmse))
             elif 'alpha_05' in name:
-                alpha_data.append((0.5, data['rmse']))
+                alpha_data.append((0.5, rmse))
             elif 'alpha_20' in name:
-                alpha_data.append((2.0, data['rmse']))
+                alpha_data.append((2.0, rmse))
         
         if alpha_data:
             alpha_data.sort(key=lambda x: x[0])
@@ -245,10 +272,13 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
             
             fig3, ax3 = plt.subplots(figsize=(8, 5))
             ax3.plot(alphas, rmse_vals, 'o-', markersize=10, linewidth=2, color='#2E86AB')
-            ax3.scatter([alphas[rmse_vals.index(min(rmse_vals))]], [min(rmse_vals)], 
+            
+            # Highlight best point
+            min_idx = rmse_vals.index(min(rmse_vals))
+            ax3.scatter([alphas[min_idx]], [min(rmse_vals)], 
                        s=150, c='#E74C3C', marker='*', zorder=5, label='Best')
             
-            ax3.set_xlabel('Variance Scaling α', fontsize=12)
+            ax3.set_xlabel('Variance Scaling Alpha', fontsize=12)
             ax3.set_ylabel('RMSE (m)', fontsize=12)
             ax3.set_title('Sensitivity Analysis: Variance Scaling Parameter', fontsize=14)
             ax3.grid(True, alpha=0.3)
@@ -271,7 +301,18 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
     configs = get_ablation_configs()
     results = {}
 
-    for config_name, config in configs.items():
+    # Define order of execution/plotting
+    ordered_keys = [
+        "nominal", "sgp_mpc", "ar_mpc", 
+        "ar_mpc_fifo", "ar_mpc_no_var", 
+        "sensitivity_alpha_05", "sensitivity_alpha_20"
+    ]
+    
+    # Ensure all keys exist
+    ordered_keys = [k for k in ordered_keys if k in configs]
+
+    for config_name in ordered_keys:
+        config = configs[config_name]
         print(f"Running: {config['description']}...")
         
         result = run_single_ablation(
@@ -286,19 +327,21 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
             }
             print(f"  RMSE: {result['rmse']:.4f} m, Max Vel: {result['max_vel']:.2f} m/s")
         else:
-            print(f"  Failed to run")
+            print(f"  Failed to run {config_name}")
 
-    # 打印汇总表格
+    # Print Summary Table
     if results:
         print("\n" + "=" * 70)
         print("Summary Table")
         print("=" * 70)
         print(f"{'Configuration':<25} {'RMSE (m)':<15} {'Max Vel (m/s)':<15}")
         print("-" * 70)
-        for config_name, result in results.items():
-            print(f"{result['description']:<25} {result['rmse']:<15.4f} {result['max_vel']:<15.2f}")
+        for config_name in ordered_keys:
+            if config_name in results:
+                result = results[config_name]
+                print(f"{result['description']:<25} {result['rmse']:<15.4f} {result['max_vel']:<15.2f}")
         
-        # 生成可视化
+        # Visualize
         if visualize:
             print("\n--- Generating visualizations ---")
             plot_ablation_results(results, speed)
@@ -316,7 +359,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ablation study for variance-aware GP-MPC")
     parser.add_argument("--speed", type=float, default=2.7, help="Average trajectory speed (m/s)")
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
-    parser.add_argument("--seeds", type=int, default=1, help="Number of Monte Carlo seeds")
+    parser.add_argument("--seeds", type=int, default=303, help="Number of Monte Carlo seeds")
     parser.add_argument("--no-viz", action="store_true", help="Disable visualization")
     args = parser.parse_args()
 
