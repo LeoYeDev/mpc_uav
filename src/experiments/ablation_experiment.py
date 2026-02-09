@@ -150,7 +150,118 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
         return None
 
 
-def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1):
+def plot_ablation_results(results, speed, save_dir="outputs/figures"):
+    """
+    Generate and save ablation result visualizations.
+    """
+    import matplotlib.pyplot as plt
+    import os
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # 设置中英文字体
+    plt.rcParams['font.family'] = ['DejaVu Sans', 'SimHei']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    if not results:
+        print("No results to plot")
+        return
+    
+    # 准备数据
+    names = [r['description'] for r in results.values()]
+    rmses = [r['rmse'] for r in results.values()]
+    colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6', '#1ABC9C', '#34495E']
+    
+    # ========== 图1: RMSE柱状图 ==========
+    fig1, ax1 = plt.subplots(figsize=(10, 6))
+    bars = ax1.bar(range(len(names)), rmses, color=colors[:len(names)], edgecolor='black', linewidth=1.2)
+    
+    ax1.set_xticks(range(len(names)))
+    ax1.set_xticklabels(names, rotation=45, ha='right', fontsize=10)
+    ax1.set_ylabel('RMSE (m)', fontsize=12)
+    ax1.set_title(f'Ablation Study Results (Speed: {speed} m/s)', fontsize=14)
+    ax1.set_ylim(0, max(rmses) * 1.2)
+    
+    # 添加数值标签
+    for bar, rmse in zip(bars, rmses):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.005, 
+                f'{rmse:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    ax1.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    
+    fig1_path = os.path.join(save_dir, 'ablation_rmse_comparison.pdf')
+    fig1.savefig(fig1_path, dpi=300, bbox_inches='tight')
+    fig1.savefig(fig1_path.replace('.pdf', '.png'), dpi=300, bbox_inches='tight')
+    print(f"Saved: {fig1_path}")
+    plt.close(fig1)
+    
+    # ========== 图2: 相对改善柱状图 ==========
+    if 'nominal' in results:
+        baseline = results['nominal']['rmse']
+        improvements = [(1 - r['rmse']/baseline) * 100 for r in results.values()]
+        
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        bars2 = ax2.bar(range(len(names)), improvements, color=colors[:len(names)], 
+                        edgecolor='black', linewidth=1.2)
+        
+        ax2.set_xticks(range(len(names)))
+        ax2.set_xticklabels(names, rotation=45, ha='right', fontsize=10)
+        ax2.set_ylabel('Improvement over Nominal (%)', fontsize=12)
+        ax2.set_title(f'Relative Improvement by Configuration', fontsize=14)
+        
+        # 添加数值标签
+        for bar, imp in zip(bars2, improvements):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                    f'{imp:.1f}%', ha='center', va='bottom', fontsize=9)
+        
+        ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax2.grid(axis='y', alpha=0.3)
+        plt.tight_layout()
+        
+        fig2_path = os.path.join(save_dir, 'ablation_improvement.pdf')
+        fig2.savefig(fig2_path, dpi=300, bbox_inches='tight')
+        print(f"Saved: {fig2_path}")
+        plt.close(fig2)
+    
+    # ========== 图3: α敏感性分析 ==========
+    alpha_configs = {k: v for k, v in results.items() if 'alpha' in k or k in ['no_variance', 'full_system']}
+    if len(alpha_configs) > 1:
+        # 提取α值和对应RMSE
+        alpha_data = []
+        for name, data in alpha_configs.items():
+            if name == 'no_variance':
+                alpha_data.append((0.0, data['rmse']))
+            elif name == 'full_system':
+                alpha_data.append((1.0, data['rmse']))
+            elif 'alpha_05' in name:
+                alpha_data.append((0.5, data['rmse']))
+            elif 'alpha_20' in name:
+                alpha_data.append((2.0, data['rmse']))
+        
+        if alpha_data:
+            alpha_data.sort(key=lambda x: x[0])
+            alphas, rmse_vals = zip(*alpha_data)
+            
+            fig3, ax3 = plt.subplots(figsize=(8, 5))
+            ax3.plot(alphas, rmse_vals, 'o-', markersize=10, linewidth=2, color='#2E86AB')
+            ax3.scatter([alphas[rmse_vals.index(min(rmse_vals))]], [min(rmse_vals)], 
+                       s=150, c='#E74C3C', marker='*', zorder=5, label='Best')
+            
+            ax3.set_xlabel('Variance Scaling α', fontsize=12)
+            ax3.set_ylabel('RMSE (m)', fontsize=12)
+            ax3.set_title('Sensitivity Analysis: Variance Scaling Parameter', fontsize=14)
+            ax3.grid(True, alpha=0.3)
+            ax3.legend()
+            
+            plt.tight_layout()
+            fig3_path = os.path.join(save_dir, 'alpha_sensitivity.pdf')
+            fig3.savefig(fig3_path, dpi=300, bbox_inches='tight')
+            print(f"Saved: {fig3_path}")
+            plt.close(fig3)
+
+
+def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize=True):
     """Run complete ablation study."""
     print("=" * 70)
     print("Ablation Study for Variance-Aware GP-MPC")
@@ -186,6 +297,11 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1):
         print("-" * 70)
         for config_name, result in results.items():
             print(f"{result['description']:<25} {result['rmse']:<15.4f} {result['max_vel']:<15.2f}")
+        
+        # 生成可视化
+        if visualize:
+            print("\n--- Generating visualizations ---")
+            plot_ablation_results(results, speed)
 
     return results
 
@@ -201,6 +317,12 @@ if __name__ == "__main__":
     parser.add_argument("--speed", type=float, default=2.7, help="Average trajectory speed (m/s)")
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
     parser.add_argument("--seeds", type=int, default=1, help="Number of Monte Carlo seeds")
+    parser.add_argument("--no-viz", action="store_true", help="Disable visualization")
     args = parser.parse_args()
 
-    results = run_ablation_study(speed=args.speed, trajectory_type=args.trajectory, n_seeds=args.seeds)
+    results = run_ablation_study(
+        speed=args.speed, 
+        trajectory_type=args.trajectory, 
+        n_seeds=args.seeds,
+        visualize=not args.no_viz
+    )
