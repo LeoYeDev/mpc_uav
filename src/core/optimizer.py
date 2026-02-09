@@ -106,6 +106,13 @@ class Quad3DOptimizer:
             self.B_z = gp_regressors.B_z
         else:
             self.gp_reg_ensemble = None
+            # 为在线GP（无离线GP）定义默认的B_x映射矩阵
+            # 假设在线GP输出是3维加速度残差，映射到状态向量的速度分量(indices 7,8,9)
+            if use_online_gp:
+                self.B_x = np.zeros((self.state_dim, 3))
+                self.B_x[7, 0] = 1.0  # vx
+                self.B_x[8, 1] = 1.0  # vy
+                self.B_x[9, 2] = 1.0  # vz
 
         # ========================================================================
         # 核心修改 1: 在线GP的条件初始化
