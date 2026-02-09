@@ -211,20 +211,24 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
         # 在线GP预测
         # ========================================================================
         online_predictions = None
+        online_variances = None
         if online_gp_manager and any(gp.is_trained_once for gp in online_gp_manager.gps):
             # 1. 使用上一步MPC规划的轨迹(x_pred)作为对未来状态的近似
             # 2. 将世界系速度转换为机体坐标系速度
             planned_states_body = world_to_body_velocity_mapping(x_pred)
             planned_velocities_body = planned_states_body[:, 7:10]
             
-            # 3. 调用在线GP进行预测
-            predicted_residuals, _ = online_gp_manager.predict(planned_velocities_body)
+            # 3. 调用在线GP进行预测 (同时获取均值和方差)
+            predicted_residuals, predicted_variances = online_gp_manager.predict(planned_velocities_body)
             online_predictions = predicted_residuals
+            online_variances = predicted_variances  # 用于MPC方差成本惩罚
         # ========================================================================
 
         # Optimize control input to reach pre-set target
         t_opt_init = time.time()
-        w_opt, x_pred = quad_mpc.optimize(use_model=model_ind, return_x=True, online_gp_predictions=online_predictions)
+        w_opt, x_pred = quad_mpc.optimize(use_model=model_ind, return_x=True, 
+                                          online_gp_predictions=online_predictions,
+                                          online_gp_variances=online_variances)
         mean_opt_time += time.time() - t_opt_init
 
         # Select first input (one for each motor) - MPC applies only first optimized input to the plant

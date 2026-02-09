@@ -114,8 +114,14 @@ class Quad3DOptimizer:
         if self.use_online_gp:
             # 为在线GP预测的机体坐标系加速度残差定义一个符号变量
             self.online_gp_residual = cs.MX.sym('online_gp_res', 3)
+            # 为在线GP预测的方差定义符号变量 (用于方差成本惩罚)
+            self.online_gp_variance = cs.MX.sym('online_gp_var', 3)
+            # 方差成本权重 (从solver_options获取，默认0.1)
+            self.variance_cost_weight = solver_options.get('variance_cost_weight', 0.1) if solver_options else 0.1
         else:
             self.online_gp_residual = None
+            self.online_gp_variance = None
+            self.variance_cost_weight = 0.0
         # ========================================================================
 
         # Declare model variables for GP prediction (only used in real quadrotor flight with EKF estimator).
@@ -191,25 +197,60 @@ class Quad3DOptimizer:
             ocp.dims.np = n_param
             ocp.parameter_values = np.zeros(n_param)
 
-            ocp.cost.cost_type = 'LINEAR_LS'
-            ocp.cost.cost_type_e = 'LINEAR_LS'
+            # ========================================================================
+            # Cost function: Use NONLINEAR_LS with variance penalty when online GP enabled
+            # ========================================================================
+            if self.use_online_gp and self.variance_cost_weight > 0:
+                # NONLINEAR_LS cost type to support parameter-dependent variance penalty
+                ocp.cost.cost_type = 'NONLINEAR_LS'
+                ocp.cost.cost_type_e = 'NONLINEAR_LS'
+                
+                # Cost expression: [state, control, variance_penalty]
+                # Variance penalty: sqrt(variance + eps) * weight, higher variance = higher cost
+                variance_penalty = cs.sqrt(self.online_gp_variance + 1e-6) * self.variance_cost_weight
+                
+                # Stage cost expression (includes variance penalty)
+                ocp.model.cost_y_expr = cs.vertcat(self.x, self.u, variance_penalty)
+                # Terminal cost expression (state only, no control or variance)
+                ocp.model.cost_y_expr_e = self.x
+                
+                # Extended weight matrix with variance penalty terms
+                ny_with_var = ny + 3  # +3 for variance in x,y,z dimensions
+                W_extended = np.zeros((ny_with_var, ny_with_var))
+                W_extended[:ny, :ny] = np.diag(np.concatenate((q_diagonal, r_cost)))
+                W_extended[ny:, ny:] = np.eye(3)  # Unit weight for variance (weight is in expression)
+                
+                ocp.cost.W = W_extended
+                ocp.cost.W_e = np.diag(q_diagonal)
+                terminal_cost = 0 if solver_options is None or not solver_options["terminal_cost"] else 1
+                ocp.cost.W_e *= terminal_cost
+                
+                # Initial reference (will be overwritten at runtime)
+                x_ref = np.zeros(nx)
+                ocp.cost.yref = np.concatenate((x_ref, np.array([0.0, 0.0, 0.0, 0.0]), np.zeros(3)))
+                ocp.cost.yref_e = x_ref
+            else:
+                # Standard LINEAR_LS cost (no variance penalty)
+                ocp.cost.cost_type = 'LINEAR_LS'
+                ocp.cost.cost_type_e = 'LINEAR_LS'
 
-            ocp.cost.W = np.diag(np.concatenate((q_diagonal, r_cost)))
-            ocp.cost.W_e = np.diag(q_diagonal)
-            terminal_cost = 0 if solver_options is None or not solver_options["terminal_cost"] else 1
-            ocp.cost.W_e *= terminal_cost
+                ocp.cost.W = np.diag(np.concatenate((q_diagonal, r_cost)))
+                ocp.cost.W_e = np.diag(q_diagonal)
+                terminal_cost = 0 if solver_options is None or not solver_options["terminal_cost"] else 1
+                ocp.cost.W_e *= terminal_cost
 
-            ocp.cost.Vx = np.zeros((ny, nx))
-            ocp.cost.Vx[:nx, :nx] = np.eye(nx)
-            ocp.cost.Vu = np.zeros((ny, nu))
-            ocp.cost.Vu[-4:, -4:] = np.eye(nu)
+                ocp.cost.Vx = np.zeros((ny, nx))
+                ocp.cost.Vx[:nx, :nx] = np.eye(nx)
+                ocp.cost.Vu = np.zeros((ny, nu))
+                ocp.cost.Vu[-4:, -4:] = np.eye(nu)
 
-            ocp.cost.Vx_e = np.eye(nx)
+                ocp.cost.Vx_e = np.eye(nx)
 
-            # Initial reference trajectory (will be overwritten)
-            x_ref = np.zeros(nx)
-            ocp.cost.yref = np.concatenate((x_ref, np.array([0.0, 0.0, 0.0, 0.0])))
-            ocp.cost.yref_e = x_ref
+                # Initial reference trajectory (will be overwritten)
+                x_ref = np.zeros(nx)
+                ocp.cost.yref = np.concatenate((x_ref, np.array([0.0, 0.0, 0.0, 0.0])))
+                ocp.cost.yref_e = x_ref
+            # ========================================================================
 
             # Initial state (will be overwritten)
             ocp.constraints.x0 = x_ref
@@ -367,6 +408,7 @@ class Quad3DOptimizer:
                 params_list = [self.gp_x, self.trigger_var]
                 if self.use_online_gp:
                     params_list.append(self.online_gp_residual)
+                    params_list.append(self.online_gp_variance)  # 添加方差参数用于成本惩罚
                 params = cs.vertcat(*params_list)
                 # ========================================================================
                 
@@ -544,6 +586,9 @@ class Quad3DOptimizer:
         for j in range(self.N):
             ref = stacked_x_target[j, :]
             ref = np.concatenate((ref, u_target[j, :]))
+            # 如果使用在线GP和方差成本惩罚，需要添加方差参考值（目标是0，即希望低方差）
+            if self.use_online_gp and self.variance_cost_weight > 0:
+                ref = np.concatenate((ref, np.zeros(3)))  # 方差惩罚的参考值为0
             self.acados_ocp_solver[gp_ind].set(j, "yref", ref)
         # the last MPC node has only a state reference but no input reference
         self.acados_ocp_solver[gp_ind].set(self.N, "yref", stacked_x_target[self.N, :])
@@ -568,7 +613,8 @@ class Quad3DOptimizer:
         # Call with self.x_with_gp even if use_gp=False
         return discretize_dynamics_and_cost(t_horizon, n, m, self.x, self.u, dynamics, self.L, i)
 
-    def run_optimization(self, initial_state=None, use_model=0, return_x=False, gp_regression_state=None, online_gp_predictions=None):
+    def run_optimization(self, initial_state=None, use_model=0, return_x=False, 
+                         gp_regression_state=None, online_gp_predictions=None, online_gp_variances=None):
         """
         Optimizes a trajectory to reach the pre-set target state, starting from the input initial state, that minimizes
         the quadratic cost function and respects the constraints of the system
@@ -577,6 +623,8 @@ class Quad3DOptimizer:
         :param use_model: integer, select which model to use from the available options.
         :param return_x: bool, whether to also return the optimized sequence of states alongside with the controls.
         :param gp_regression_state: 13-element list of state for GP prediction. If None, initial_state will be used.
+        :param online_gp_predictions: (N, 3) array of online GP mean predictions for each node
+        :param online_gp_variances: (N, 3) array of online GP variances for each node (used for variance cost)
         :return: optimized control input sequence (flattened)
         """
 
@@ -592,7 +640,7 @@ class Quad3DOptimizer:
         self.acados_ocp_solver[use_model].set(0, 'ubx', x_init)
 
         # ========================================================================
-        # 核心修改 4: 在运行时设置参数p的数值，包含在线GP的预测值
+        # 核心修改 4: 在运行时设置参数p的数值，包含在线GP的预测值和方差
         # ========================================================================
         for j in range(self.N):  # 遍历MPC的N个控制节点
             p_values = []
@@ -607,12 +655,17 @@ class Quad3DOptimizer:
             
                 # 2. 添加在线GP参数的数值 (如果启用)
                 if self.use_online_gp:
+                    # 添加预测均值
                     if online_gp_predictions is not None and j < online_gp_predictions.shape[0]:
                         p_values.extend(online_gp_predictions[j, :])
                     else:
                         p_values.extend([0.0, 0.0, 0.0])
-                # else:
-                #     p_values.extend([0.0, 0.0, 0.0])
+                    
+                    # 添加预测方差 (用于方差成本惩罚)
+                    if online_gp_variances is not None and j < online_gp_variances.shape[0]:
+                        p_values.extend(online_gp_variances[j, :])
+                    else:
+                        p_values.extend([1.0, 1.0, 1.0])  # 默认高方差，鼓励保守行为
             
             # 3. 如果p_values不为空，则设置给求解器
             if p_values:

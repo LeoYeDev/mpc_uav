@@ -118,14 +118,17 @@ class Quad3DMPC:
             # Target state is a sequence
             return self.quad_opt.set_reference_trajectory(x_reference, u_reference)
 
-    def optimize(self, use_model: int = 0, return_x: bool = False, online_gp_predictions: Optional[dict] = None) -> tuple:
+    def optimize(self, use_model: int = 0, return_x: bool = False, 
+                 online_gp_predictions: Optional[np.ndarray] = None,
+                 online_gp_variances: Optional[np.ndarray] = None) -> tuple:
         """
         Runs MPC optimization to reach the pre-set target.
         
         Args:
             use_model (int): Select which dynamics model to use.
             return_x (bool): If True, returns optimized state prediction.
-            online_gp_predictions (dict, optional): Predictions from online GP for AR-MPC.
+            online_gp_predictions (np.ndarray, optional): Mean predictions from online GP for AR-MPC.
+            online_gp_variances (np.ndarray, optional): Variance predictions from online GP for variance cost.
             
         Returns:
             tuple: (u_opt, [x_opt])
@@ -138,7 +141,9 @@ class Quad3DMPC:
 
         # Remove rate state for simplified model NLP
         out_out = self.quad_opt.run_optimization(quad_current_state, use_model=use_model, return_x=return_x,
-                                                 gp_regression_state=quad_gp_state,online_gp_predictions=online_gp_predictions)
+                                                 gp_regression_state=quad_gp_state,
+                                                 online_gp_predictions=online_gp_predictions,
+                                                 online_gp_variances=online_gp_variances)
         return out_out
 
     def simulate(self, ref_u: np.ndarray, external_v: Optional[np.ndarray] = None) -> None:
@@ -286,7 +291,8 @@ class Quad3DMPC:
         # 2. 处理在线GP参数 (如果模型中包含)
         #    对于残差计算，在线GP的补偿必须为0，以获得真实的模型误差
         if self.quad_opt.use_online_gp:
-            p_acados_numerical_list.extend([0.0, 0.0, 0.0])
+            p_acados_numerical_list.extend([0.0, 0.0, 0.0])  # 均值预测
+            p_acados_numerical_list.extend([1.0, 1.0, 1.0])  # 方差参数 (高方差表示不确定)
 
         p_acados_numerical_final = cs.DM(p_acados_numerical_list) if p_acados_numerical_list else cs.DM([])
         # ========================================================================
