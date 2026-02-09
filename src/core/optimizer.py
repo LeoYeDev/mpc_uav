@@ -114,14 +114,18 @@ class Quad3DOptimizer:
         if self.use_online_gp:
             # 为在线GP预测的机体坐标系加速度残差定义一个符号变量
             self.online_gp_residual = cs.MX.sym('online_gp_res', 3)
-            # 为在线GP预测的方差定义符号变量 (用于方差成本惩罚)
+            # 为在线GP预测的方差定义符号变量 (用于方差成本惩罚和置信度缩放)
             self.online_gp_variance = cs.MX.sym('online_gp_var', 3)
             # 方差成本权重 (从solver_options获取，默认0.1)
             self.variance_cost_weight = solver_options.get('variance_cost_weight', 0.1) if solver_options else 0.1
+            # 方差缩放系数 alpha: confidence = 1/(1 + alpha*variance)
+            # alpha=0 表示不缩放 (完全信任GP), alpha越大越保守
+            self.variance_scaling_alpha = solver_options.get('variance_scaling_alpha', 1.0) if solver_options else 1.0
         else:
             self.online_gp_residual = None
             self.online_gp_variance = None
             self.variance_cost_weight = 0.0
+            self.variance_scaling_alpha = 0.0
         # ========================================================================
 
         # Declare model variables for GP prediction (only used in real quadrotor flight with EKF estimator).
@@ -353,14 +357,30 @@ class Quad3DOptimizer:
 
         # ========================================================================
         # 核心修改 2: 定义在线GP补偿项（如果启用）
+        # 使用方差进行置信度缩放：高方差时减少GP补偿，回退到名义模型
         # ========================================================================
         online_gp_dynamics_term = cs.MX.zeros(self.state_dim, 1)
         if self.use_online_gp:
             # 将机体坐标系下的在线残差，旋转到世界坐标系
             online_residual_world = v_dot_q(self.online_gp_residual, self.x[3:7])
-            # 使用与离线GP相同的 B_x 矩阵进行映射，因为目标都是世界系下的速度导数
-            # 注意: 这里我们假设在线GP补偿的是所有三个速度维度，因此B_x应该适用
-            online_gp_dynamics_term = cs.mtimes(self.B_x, online_residual_world)
+            
+            # ----------------------------------------------------------------
+            # 方差置信度缩放: confidence = 1 / (1 + alpha * variance)
+            # - 低方差 (高置信) -> confidence ≈ 1 -> 完全应用GP补偿
+            # - 高方差 (低置信) -> confidence ≈ 0 -> 回退到名义模型
+            # ----------------------------------------------------------------
+            if self.variance_scaling_alpha > 0:
+                # 计算每个维度的置信度 (element-wise)
+                # variance是3维向量，confidence也是3维向量
+                confidence = 1.0 / (1.0 + self.variance_scaling_alpha * self.online_gp_variance)
+                # 对残差进行逐元素缩放
+                scaled_residual_world = online_residual_world * confidence
+            else:
+                # alpha=0 表示不进行缩放，完全信任GP
+                scaled_residual_world = online_residual_world
+            
+            # 使用与离线GP相同的 B_x 矩阵进行映射
+            online_gp_dynamics_term = cs.mtimes(self.B_x, scaled_residual_world)
         # ========================================================================
 
 
