@@ -29,25 +29,20 @@ class OnlineGPConfig:
     
     Attributes:
         num_dimensions: 输出维数（通常为 vx, vy, vz 的 3 维）
-                        Number of output dimensions (typically 3 for vx, vy, vz)
         main_process_device: 主进程使用的设备 ('cpu' 或 'cuda')
-                             Device for main process ('cpu' or 'cuda')
         worker_device_str: 工作进程使用的设备 (多进程必须使用 'cpu')
-                           Device for worker processes (must be 'cpu' for multiprocessing)
         buffer_max_size: 缓冲区中的最大点数
-                         Maximum number of points in buffer
         novelty_weight: 缓冲区评分中新颖性相对于新近性的权重 (0-1)
-                        Weight for novelty vs recency in buffer scoring (0-1)
         error_threshold: 触发重训练的预测误差阈值 (m/s^2)
-                         Prediction error threshold for triggering retraining (m/s^2)
         min_points_for_initial_train: 触发首次训练所需的最小点数
-                                      Minimum points to trigger first training
         refit_hyperparams_interval: 重训练之间的更新次数间隔
-                                    Number of updates between retraining
         worker_train_iters: 每个工作任务的训练迭代次数
-                            Training iterations per worker task
         worker_lr: 训练的学习率
-                   Learning rate for training
+        
+        # Ablation switches (消融开关)
+        buffer_type: 缓冲区类型 ('ivs' 信息值选择 / 'fifo' 先进先出)
+        async_hp_updates: 是否异步更新超参数 (True 异步 / False 同步)
+        variance_scaling_alpha: 方差缩放系数 (0=完全信任GP, 1=默认保守)
     """
     num_dimensions: int = 3
     main_process_device: str = 'cpu'
@@ -59,6 +54,11 @@ class OnlineGPConfig:
     refit_hyperparams_interval: int = 10
     worker_train_iters: int = 20
     worker_lr: float = 0.045
+    
+    # Ablation switches (消融实验开关)
+    buffer_type: str = 'ivs'           # 'ivs' (Information Value Selection) or 'fifo'
+    async_hp_updates: bool = True      # True=async, False=sync (blocking)
+    variance_scaling_alpha: float = 1.0  # 0=full GP trust, higher=more conservative
     
     def to_dict(self):
         """
@@ -76,6 +76,10 @@ class OnlineGPConfig:
             'refit_hyperparams_interval': self.refit_hyperparams_interval,
             'worker_train_iters': self.worker_train_iters,
             'worker_lr': self.worker_lr,
+            # Ablation switches
+            'buffer_type': self.buffer_type,
+            'async_hp_updates': self.async_hp_updates,
+            'variance_scaling_alpha': self.variance_scaling_alpha,
         }
 
 

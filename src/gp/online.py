@@ -141,6 +141,33 @@ class InformationGainBuffer:
     
     def __len__(self):
         return len(self.data)
+
+
+class FIFOBuffer:
+    """
+    简单的先进先出 (FIFO) 缓冲区，用于消融实验对比。
+    当缓冲区满时，移除最旧的数据点。
+    """
+    def __init__(self, max_size: int):
+        self.max_size = max_size
+        self.data = deque(maxlen=max_size)
+    
+    def insert(self, v_scalar: float, y_scalar: float) -> None:
+        """插入新数据点，自动移除最旧的点。"""
+        self.data.append((v_scalar, y_scalar))
+    
+    def get_training_set(self) -> list:
+        """获取用于训练的数据集。"""
+        return list(self.data)
+    
+    def reset(self):
+        """清空缓冲区。"""
+        self.data.clear()
+    
+    def __len__(self):
+        return len(self.data)
+
+
 # =================================================================================
 # 2. 训练历史记录器
 # =================================================================================
@@ -257,10 +284,17 @@ class IncrementalGP:
         self.device = torch.device(config.get('main_process_device', 'cpu'))
         self.epsilon = 1e-7
         
-        # 数据缓冲区 - 基于信息增益评分的智能缓冲区
+        # 数据缓冲区 - 根据config选择缓冲区类型
         max_size = config.get('buffer_max_size', 30)
-        novelty_weight = config.get('novelty_weight', 0.7)
-        self.buffer = InformationGainBuffer(max_size, novelty_weight)
+        buffer_type = config.get('buffer_type', 'ivs')
+        
+        if buffer_type == 'fifo':
+            # 简单的FIFO缓冲区（用于消融实验对比）
+            self.buffer = FIFOBuffer(max_size)
+        else:
+            # 默认：基于信息增益评分的智能缓冲区 (IVS)
+            novelty_weight = config.get('novelty_weight', 0.7)
+            self.buffer = InformationGainBuffer(max_size, novelty_weight)
 
         # 批量归一化统计量（每次从缓冲区计算，避免EMA漂移）
         self._cached_norm_stats = None  # (v_mean, v_std, r_mean, r_std)

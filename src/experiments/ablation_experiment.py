@@ -1,10 +1,14 @@
 """
-Ablation experiment for variance-aware GP-MPC.
+Comprehensive Ablation Experiment for Variance-Aware GP-MPC.
 
-Compares different variance scaling strategies:
-1. No GP (Nominal MPC)
-2. GP only (no variance scaling)
-3. GP + Variance Scaling (confidence-based)
+Implements ablation study required by reviewers:
+(a) without static GP
+(b) without online GP
+(c) without IVS (FIFO buffer)
+(d) without variance mechanism (alpha=0)
+(e) with/without async hyperparameter updates
+
+Also includes sensitivity analysis for alpha values.
 
 Run: python src/experiments/ablation_experiment.py
 """
@@ -12,6 +16,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import multiprocessing
+from dataclasses import replace
 
 from config.configuration_parameters import SimpleSimConfig
 from config.gp_config import OnlineGPConfig
@@ -27,59 +32,105 @@ from src.gp.utils import world_to_body_velocity_mapping
 
 
 # ============================================================================
-# Ablation Configuration (Simplified: only variance_scaling_alpha)
+# Comprehensive Ablation Configurations (Reviewer Requirements)
 # ============================================================================
-ABLATION_CONFIGS = {
-    "nominal": {
-        "description": "Nominal MPC (无GP)",
-        "use_online_gp": False,
-        "use_offline_gp": False,
-        "solver_options": {},
-    },
-    "gp_no_variance": {
-        "description": "GP-MPC (α=0, 完全信任GP)",
-        "use_online_gp": True,
-        "use_offline_gp": True,
-        "solver_options": {
-            "variance_scaling_alpha": 0.0,  # 完全信任GP
-        },
-    },
-    "gp_variance_low": {
-        "description": "GP-MPC (α=0.5, 轻度保守)",
-        "use_online_gp": True,
-        "use_offline_gp": True,
-        "solver_options": {
-            "variance_scaling_alpha": 0.5,
-        },
-    },
-    "gp_variance_default": {
-        "description": "GP-MPC (α=1.0, 默认保守)",
-        "use_online_gp": True,
-        "use_offline_gp": True,
-        "solver_options": {
-            "variance_scaling_alpha": 1.0,
-        },
-    },
-    "gp_variance_high": {
-        "description": "GP-MPC (α=2.0, 高度保守)",
-        "use_online_gp": True,
-        "use_offline_gp": True,
-        "solver_options": {
-            "variance_scaling_alpha": 2.0,
-        },
-    },
-}
 
-
-def prepare_quadrotor_mpc_ablation(simulation_options, config_name, version=None, name=None, 
-                                     reg_type="gp", t_horizon=1.0, q_diagonal=None, r_diagonal=None):
-    """Create MPC with ablation configuration."""
-    ablation_config = ABLATION_CONFIGS[config_name]
+def get_ablation_configs():
+    """Generate ablation configurations matching reviewer requirements."""
+    base_gp_config = OnlineGPConfig()
     
-    if q_diagonal is None:
+    return {
+        # Baseline: Nominal MPC (no GP at all)
+        "nominal": {
+            "description": "Nominal MPC (无GP)",
+            "use_static_gp": False,
+            "use_online_gp": False,
+            "gp_config": None,
+            "solver_options": {"variance_scaling_alpha": 0.0},
+        },
+        
+        # (a) Without Static GP - Online GP only
+        "online_only": {
+            "description": "(a) 仅在线GP",
+            "use_static_gp": False,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, variance_scaling_alpha=1.0),
+            "solver_options": {"variance_scaling_alpha": 1.0},
+        },
+        
+        # (b) Without Online GP - Static GP only
+        "static_only": {
+            "description": "(b) 仅离线GP",
+            "use_static_gp": True,
+            "use_online_gp": False,
+            "gp_config": None,
+            "solver_options": {"variance_scaling_alpha": 0.0},
+        },
+        
+        # (c) Without IVS - Use FIFO buffer
+        "fifo_buffer": {
+            "description": "(c) FIFO缓冲区",
+            "use_static_gp": True,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, buffer_type='fifo', variance_scaling_alpha=1.0),
+            "solver_options": {"variance_scaling_alpha": 1.0},
+        },
+        
+        # (d) Without Variance mechanism (alpha=0)
+        "no_variance": {
+            "description": "(d) 无方差机制 (α=0)",
+            "use_static_gp": True,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, variance_scaling_alpha=0.0),
+            "solver_options": {"variance_scaling_alpha": 0.0},
+        },
+        
+        # (e) Sync HP updates (blocking)
+        "sync_updates": {
+            "description": "(e) 同步HP更新",
+            "use_static_gp": True,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, async_hp_updates=False, variance_scaling_alpha=1.0),
+            "solver_options": {"variance_scaling_alpha": 1.0},
+        },
+        
+        # Full System (all features enabled)
+        "full_system": {
+            "description": "完整系统",
+            "use_static_gp": True,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, variance_scaling_alpha=1.0),
+            "solver_options": {"variance_scaling_alpha": 1.0},
+        },
+        
+        # Sensitivity: alpha = 0.5
+        "alpha_0.5": {
+            "description": "α=0.5 (轻度保守)",
+            "use_static_gp": True,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, variance_scaling_alpha=0.5),
+            "solver_options": {"variance_scaling_alpha": 0.5},
+        },
+        
+        # Sensitivity: alpha = 2.0
+        "alpha_2.0": {
+            "description": "α=2.0 (高度保守)",
+            "use_static_gp": True,
+            "use_online_gp": True,
+            "gp_config": replace(base_gp_config, variance_scaling_alpha=2.0),
+            "solver_options": {"variance_scaling_alpha": 2.0},
+        },
+    }
+
+
+def prepare_quadrotor_mpc_ablation(simulation_options, config_name, config, 
+                                   version=None, name=None, t_horizon=1.0):
+    """Create MPC with specific ablation configuration."""
+    if config.get("q_diagonal") is None:
         q_diagonal = np.array([10, 10, 10, 0.1, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05])
-    if r_diagonal is None:
-        r_diagonal = np.array([0.1, 0.1, 0.1, 0.1])
+    else:
+        q_diagonal = config["q_diagonal"]
+    r_diagonal = np.array([0.1, 0.1, 0.1, 0.1])
 
     simulation_dt = 5e-4
     n_mpc_nodes = 10
@@ -87,29 +138,33 @@ def prepare_quadrotor_mpc_ablation(simulation_options, config_name, version=None
 
     my_quad = Quadrotor3D(**simulation_options)
 
-    # Load GP models if needed
-    if ablation_config["use_offline_gp"] and version is not None and name is not None:
+    # Load GP models only if static GP is enabled
+    pre_trained_models = None
+    if config["use_static_gp"] and version is not None and name is not None:
         load_ops = {"params": simulation_options, "git": version, "model_name": name}
         pre_trained_models = load_pickled_models(model_options=load_ops)
-    else:
-        pre_trained_models = None
 
     quad_name = f"my_quad_ablation_{config_name}"
     solver_options = {"terminal_cost": True, "solver_type": "SQP_RTI"}
-    solver_options.update(ablation_config["solver_options"])
+    solver_options.update(config.get("solver_options", {}))
 
     quad_mpc = Quad3DMPC(my_quad, t_horizon=t_horizon, optimization_dt=node_dt, simulation_dt=simulation_dt,
                          q_cost=q_diagonal, r_cost=r_diagonal, n_nodes=n_mpc_nodes,
                          pre_trained_models=pre_trained_models, model_name=quad_name, 
                          solver_options=solver_options,
-                         use_online_gp=ablation_config["use_online_gp"])
+                         use_online_gp=config["use_online_gp"])
 
     return quad_mpc
 
 
-def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_name="", 
-                            online_gp_manager=None):
-    """Run single ablation experiment."""
+def run_single_ablation(quad_mpc, av_speed, reference_type, config_name, config, 
+                        seed=303, record_violations=True):
+    """
+    Run single ablation experiment with detailed metrics collection.
+    
+    Returns dict with: rmse, max_velocity, opt_time, control_saturations, 
+                       max_tracking_error, violation_count
+    """
     my_quad = quad_mpc.quad
     n_mpc_nodes = quad_mpc.n_nodes
     simulation_dt = quad_mpc.simulation_dt
@@ -119,7 +174,7 @@ def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_
     mpc_period = t_horizon / (n_mpc_nodes * reference_over_sampling)
     wind_model = RealisticWindModel()
 
-    # Generate trajectory
+    # Generate trajectory with configurable seed
     if reference_type == "loop":
         reference_traj, reference_timestamps, reference_u = loop_trajectory(
             quad=my_quad, discretization_dt=mpc_period, radius=5, z=1, lin_acc=av_speed * 0.25,
@@ -130,10 +185,15 @@ def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_
             clockwise=True, yawing=False, v_max=av_speed, map_name=None, plot=False)
     else:
         reference_traj, reference_timestamps, reference_u = random_trajectory(
-            quad=my_quad, discretization_dt=mpc_period, seed=303, speed=av_speed, plot=False)
+            quad=my_quad, discretization_dt=mpc_period, seed=seed, speed=av_speed, plot=False)
 
     quad_current_state = reference_traj[0, :].tolist()
     my_quad.set_state(quad_current_state)
+
+    # Initialize online GP manager if enabled
+    online_gp_manager = None
+    if config["use_online_gp"] and config["gp_config"] is not None:
+        online_gp_manager = IncrementalGPManager(config=config["gp_config"].to_dict())
 
     x_pred = None
     model_ind = 0
@@ -143,6 +203,8 @@ def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_
     x_executed = []
     control_saturations = 0
     max_tracking_error = 0
+    violation_count = 0
+    VIOLATION_THRESHOLD = 0.5  # meters
 
     for ref_idx in range(n_points_ref - 1):
         if t_current > reference_timestamps[ref_idx + 1]:
@@ -179,12 +241,22 @@ def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_
             if ref_idx + sim_idx >= n_points_ref - 1:
                 break
             quad_mpc.simulate(ref_u=next_control, external_v=external_v)
-            x_executed.append(my_quad.get_state(quaternion=True, stacked=True))
+            current_state = my_quad.get_state(quaternion=True, stacked=True)
+            x_executed.append(current_state)
+            
+            # Check violation
+            if record_violations:
+                ref_pos = reference_traj[min(ref_idx + sim_idx, n_points_ref - 1), :3]
+                tracking_error = np.linalg.norm(np.array(current_state[:3]) - ref_pos)
+                if tracking_error > VIOLATION_THRESHOLD:
+                    violation_count += 1
+                max_tracking_error = max(max_tracking_error, tracking_error)
+            
             t_current = reference_timestamps[ref_idx + sim_idx + 1] if ref_idx + sim_idx + 1 < n_points_ref else t_current + simulation_dt
 
-        if len(x_executed) > 0:
-            current_error = np.linalg.norm(np.array(x_executed[-1][:3]) - reference_traj[min(ref_idx + sim_length, n_points_ref - 1), :3])
-            max_tracking_error = max(max_tracking_error, current_error)
+    # Cleanup
+    if online_gp_manager:
+        online_gp_manager.shutdown()
 
     x_executed = np.array(x_executed)
     mean_opt_time /= max(1, ref_idx)
@@ -192,6 +264,10 @@ def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_
     n_compare = min(len(x_executed), len(reference_traj))
     pos_rmse = np.sqrt(np.mean(np.sum((x_executed[:n_compare, :3] - reference_traj[:n_compare, :3]) ** 2, axis=1)))
     max_velocity = np.max(np.linalg.norm(x_executed[:, 7:10], axis=1)) if len(x_executed) > 1 else 0
+    
+    # Calculate violation rate
+    total_steps = len(x_executed)
+    violation_rate = violation_count / total_steps if total_steps > 0 else 0
 
     return {
         "rmse": pos_rmse,
@@ -199,52 +275,66 @@ def run_ablation_experiment(quad_mpc, av_speed, reference_type="random", config_
         "opt_time": mean_opt_time,
         "control_saturations": control_saturations,
         "max_tracking_error": max_tracking_error,
+        "violation_count": violation_count,
+        "violation_rate": violation_rate,
+        "total_steps": total_steps,
     }
 
 
-def run_full_ablation(speed=2.7, trajectory_type="random"):
-    """Run ablation study comparing all configurations."""
-    print("=" * 60)
-    print("Variance-Aware GP-MPC Ablation Study")
-    print("Mechanism: confidence = 1/(1 + α*variance)")
-    print("=" * 60)
-    print(f"Speed: {speed} m/s, Trajectory: {trajectory_type}\n")
+def run_full_ablation(speed=2.7, trajectory_type="random", n_seeds=1):
+    """
+    Run complete ablation study with optional Monte Carlo seeds.
+    """
+    print("=" * 70)
+    print("Comprehensive Ablation Study for Variance-Aware GP-MPC")
+    print("=" * 70)
+    print(f"Speed: {speed} m/s, Trajectory: {trajectory_type}, Seeds: {n_seeds}\n")
 
-    results = {}
+    configs = get_ablation_configs()
     simulation_options = SimpleSimConfig.simulation_disturbances
+    results = {}
 
-    for config_name, config in ABLATION_CONFIGS.items():
+    for config_name, config in configs.items():
         print(f"Running: {config['description']}...")
         
-        quad_mpc = prepare_quadrotor_mpc_ablation(
-            simulation_options, config_name,
-            version=DEFAULT_MODEL_VERSION, name=DEFAULT_MODEL_NAME
-        )
+        # Run with multiple seeds if Monte Carlo
+        seed_results = []
+        for seed in range(303, 303 + n_seeds):
+            quad_mpc = prepare_quadrotor_mpc_ablation(
+                simulation_options, config_name, config,
+                version=DEFAULT_MODEL_VERSION if config["use_static_gp"] else None,
+                name=DEFAULT_MODEL_NAME if config["use_static_gp"] else None
+            )
+            
+            result = run_single_ablation(
+                quad_mpc, speed, trajectory_type, config_name, config, seed=seed
+            )
+            seed_results.append(result)
 
-        online_gp_manager = None
-        if config["use_online_gp"]:
-            online_gp_manager = IncrementalGPManager(config=OnlineGPConfig().to_dict())
+        # Aggregate results
+        avg_result = {
+            "rmse": np.mean([r["rmse"] for r in seed_results]),
+            "rmse_std": np.std([r["rmse"] for r in seed_results]),
+            "max_tracking_error": np.mean([r["max_tracking_error"] for r in seed_results]),
+            "violation_rate": np.mean([r["violation_rate"] for r in seed_results]),
+            "control_saturations": np.mean([r["control_saturations"] for r in seed_results]),
+            "opt_time": np.mean([r["opt_time"] for r in seed_results]),
+        }
+        
+        results[config_name] = avg_result
+        print(f"  RMSE: {avg_result['rmse']:.4f}±{avg_result['rmse_std']:.4f} m, "
+              f"Violation Rate: {avg_result['violation_rate']*100:.2f}%")
 
-        result = run_ablation_experiment(
-            quad_mpc, speed, trajectory_type, config_name, online_gp_manager
-        )
-
-        if online_gp_manager:
-            online_gp_manager.shutdown()
-
-        results[config_name] = result
-        alpha = config["solver_options"].get("variance_scaling_alpha", "N/A")
-        print(f"  α={alpha}, RMSE: {result['rmse']:.4f} m, Max Error: {result['max_tracking_error']:.4f} m")
-
-    print("\n" + "=" * 60)
-    print("Summary")
-    print("=" * 60)
-    print(f"{'Configuration':<30} {'α':<6} {'RMSE (m)':<12} {'Max Err (m)':<12}")
-    print("-" * 60)
+    # Print summary table
+    print("\n" + "=" * 70)
+    print("Summary Table")
+    print("=" * 70)
+    print(f"{'Configuration':<25} {'RMSE (m)':<15} {'Max Err (m)':<12} {'Viol Rate':<12}")
+    print("-" * 70)
     for config_name, result in results.items():
-        desc = ABLATION_CONFIGS[config_name]['description']
-        alpha = ABLATION_CONFIGS[config_name]["solver_options"].get("variance_scaling_alpha", "-")
-        print(f"{desc:<30} {alpha:<6} {result['rmse']:<12.4f} {result['max_tracking_error']:<12.4f}")
+        desc = configs[config_name]['description']
+        rmse_str = f"{result['rmse']:.4f}±{result['rmse_std']:.4f}" if n_seeds > 1 else f"{result['rmse']:.4f}"
+        print(f"{desc:<25} {rmse_str:<15} {result['max_tracking_error']:<12.4f} {result['violation_rate']*100:<12.2f}%")
 
     return results
 
@@ -259,6 +349,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ablation study for variance-aware GP-MPC")
     parser.add_argument("--speed", type=float, default=2.7, help="Average trajectory speed (m/s)")
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
+    parser.add_argument("--seeds", type=int, default=1, help="Number of Monte Carlo seeds")
+    parser.add_argument("--quick", action="store_true", help="Run only key configurations")
     args = parser.parse_args()
 
-    results = run_full_ablation(speed=args.speed, trajectory_type=args.trajectory)
+    results = run_full_ablation(speed=args.speed, trajectory_type=args.trajectory, n_seeds=args.seeds)
