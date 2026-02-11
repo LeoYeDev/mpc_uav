@@ -124,7 +124,8 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
         name=name,
         reg_type=reg_type,
         quad_name=quad_name,
-        use_online_gp=config["use_online_gp"]
+        use_online_gp=config["use_online_gp"],
+        solver_options=config.get("solver_options", None)
     )
     
     # Prepare Online GP Manager if enabled
@@ -141,10 +142,10 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
             av_speed=speed,
             reference_type=trajectory_type,
             plot=False,
-            use_online_gp_ject=config["use_online_gp"],
-            use_wind=True,  # Always use wind for ablation to show adaptation
-            use_gp_ject=config["use_offline_gp"], 
-            online_gp_manager=online_gp_manager
+            use_online_gp=config["use_online_gp"],
+            use_offline_gp=config["use_offline_gp"], 
+            online_gp_manager=online_gp_manager,
+            model_label=config.get("description", config_name)
         )
         
         # Parse results
@@ -171,16 +172,23 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     """
     os.makedirs(save_dir, exist_ok=True)
     
-    # Use default font (English)
-    plt.style.use('default')
+    # Force standard academic font to avoid "SimHei" errors
+    import matplotlib
+    matplotlib.rc('font', family='serif') 
+    
     # Try to use seaborn style if available for better aesthetics
     # Fix for MatplotlibDeprecationWarning
+    plt.style.use('default')
     for style in ['seaborn-v0_8-whitegrid', 'seaborn-whitegrid']:
         try:
             plt.style.use(style)
             break
         except:
             pass
+    
+    # Re-enforce font family after style change
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['DejaVu Serif', 'Times New Roman', 'Liberation Serif']
 
     if not results:
         print("No results to plot")
@@ -189,11 +197,12 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     # Prepare data
     names = [r['description'] for r in results.values()]
     rmses = [r['rmse'] for r in results.values()]
+    configs = list(results.keys())
     # Defined colors
     colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6', '#1ABC9C', '#34495E']
     
-    # ========== Figure 1: RMSE Bar Chart ==========
-    fig1, ax1 = plt.subplots(figsize=(12, 6))
+    # ========== Figure 1: RMSE Bar Chart (Full) ==========
+    fig1, ax1 = plt.subplots(figsize=(10, 6))
     bars = ax1.bar(range(len(names)), rmses, color=colors[:len(names)], edgecolor='black', linewidth=1.2)
     
     ax1.set_xticks(range(len(names)))
@@ -217,12 +226,51 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     print(f"Saved: {fig1_path}")
     plt.close(fig1)
     
+    # ========== Figure 1b: Zoomed RMSE Bar Chart (Excluding Nominal & SGP) ==========
+    # Filter for AR-MPC variants to highlight IVS vs FIFO and Alpha sensitivity
+    zoom_keys = [k for k in configs if 'ar_mpc' in k or 'sensitivity' in k]
+    if len(zoom_keys) > 1:
+        zoom_names = [results[k]['description'] for k in zoom_keys]
+        zoom_rmses = [results[k]['rmse'] for k in zoom_keys]
+        
+        # Use a subset of colors
+        zoom_colors = [colors[configs.index(k) % len(colors)] for k in zoom_keys]
+        
+        fig1b, ax1b = plt.subplots(figsize=(8, 5))
+        bars1b = ax1b.bar(range(len(zoom_names)), zoom_rmses, color=zoom_colors, edgecolor='black', linewidth=1.2)
+        
+        ax1b.set_xticks(range(len(zoom_names)))
+        ax1b.set_xticklabels(zoom_names, rotation=30, ha='right', fontsize=10)
+        ax1b.set_ylabel('RMSE (m)', fontsize=12)
+        ax1b.set_title(f'Ablation Detail: AR-MPC Variants (Zoomed)', fontsize=14)
+        
+        # Smart Y-axis limits to highlight differences
+        min_r = min(zoom_rmses)
+        max_r = max(zoom_rmses)
+        margin = (max_r - min_r) * 0.5 if max_r > min_r else 0.005
+        ax1b.set_ylim(max(0, min_r - margin), max_r + margin)
+
+        # Add value labels
+        for bar, rmse in zip(bars1b, zoom_rmses):
+             ax1b.text(bar.get_x() + bar.get_width()/2, bar.get_height() + margin*0.05, 
+                f'{rmse:.4f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        
+        ax1b.grid(axis='y', alpha=0.3, which='both')
+        plt.tight_layout()
+        
+        fig1b_path = os.path.join(save_dir, 'ablation_rmse_zoomed.pdf')
+        fig1b.savefig(fig1b_path, dpi=300, bbox_inches='tight')
+        fig1b.savefig(fig1b_path.replace('.pdf', '.png'), dpi=300, bbox_inches='tight')
+        print(f"Saved: {fig1b_path}")
+        plt.close(fig1b)
+
+    
     # ========== Figure 2: Relative Improvement Chart ==========
     if 'nominal' in results:
         baseline = results['nominal']['rmse']
         improvements = [(1 - r['rmse']/baseline) * 100 for r in results.values()]
         
-        fig2, ax2 = plt.subplots(figsize=(12, 6))
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
         bars2 = ax2.bar(range(len(names)), improvements, color=colors[:len(names)], 
                         edgecolor='black', linewidth=1.2)
         
@@ -261,9 +309,9 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
                 alpha_data.append((0.0, rmse))
             elif name == 'ar_mpc':
                 alpha_data.append((1.0, rmse))
-            elif 'alpha_05' in name:
+            elif 'sensitivity_alpha_05' in name:
                 alpha_data.append((0.5, rmse))
-            elif 'alpha_20' in name:
+            elif 'sensitivity_alpha_20' in name:
                 alpha_data.append((2.0, rmse))
         
         if alpha_data:
@@ -281,6 +329,12 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
             ax3.set_xlabel('Variance Scaling Alpha', fontsize=12)
             ax3.set_ylabel('RMSE (m)', fontsize=12)
             ax3.set_title('Sensitivity Analysis: Variance Scaling Parameter', fontsize=14)
+            # Add zoomed Y-axis to see small differences
+            min_r = min(rmse_vals)
+            max_r = max(rmse_vals)
+            margin = (max_r - min_r) * 0.5 if max_r > min_r else 0.005
+            ax3.set_ylim(max(0, min_r - margin), max_r + margin)
+
             ax3.grid(True, alpha=0.3)
             ax3.legend()
             

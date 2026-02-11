@@ -14,120 +14,74 @@ from config.configuration_parameters import DirectoryConfig, SimpleSimConfig
 
 class RealisticWindModel:
     """
-    多正弦波叠加风场模型。
-    
-    模拟缓慢变化的主风场，并叠加多个频率和振幅不同的阵风分量。
-    
-    Attributes:
-        params: 风场参数配置字典
+    一个更符合物理现实的风场模型，基于多正弦波叠加。
+    它模拟了一个缓慢变化的主风场，并叠加了多个频率和振幅不同的阵风分量。
     """
-    
-    def __init__(self, config=None):
+    def __init__(self):
         """
-        初始化风场模型。
-        
-        Args:
-            config: 可选的自定义配置字典。如果为None，使用默认配置。
+        定义风场模型的参数。
+        - base_wind: 定义了缓慢变化的主风。
+        - gusts: 一个列表，定义了多个快速变化的阵风/湍流分量。
         """
-        if config is None:
-            config = self._get_default_config()
-        
-        self.params = config
-        self._log_init()
-    
-    def _get_default_config(self):
-        """返回默认风场配置。"""
-        return {
-            'ramp_slope': np.array([0.1, 0.1, 0.01]),
+        wind_vel_params = {
+            # 新增：风速随时间线性增长的斜率
+            'ramp_slope': np.array([0.1, 0.1, 0.01]), # 各轴风速每秒增加量 (m/s^2)
+
+            # 主风场：振幅减小，代表更平稳的整体趋势
             'base_wind': {
-                'amp': np.array([0.2, 0.2, 0.05]),
-                'freq': np.array([0.04, 0.03, 0.1]),
-                'phase': np.array([0, np.pi/2, np.pi]),
-                'offset': np.array([1.5, 2.5, 0.2])
+                'amp': np.array([0.2, 0.2, 0.05]),    # 各轴主风速振幅 (m/s) - 减小
+                'freq': np.array([0.04, 0.03, 0.1]), # 各轴主风速变化频率 (rad/s) - 保持慢速
+                'phase': np.array([0, np.pi/2, np.pi]), # 各轴风速相位
+                'offset': np.array([1.5, 2.5, 0.2])  # 各轴风速初始偏置 (m/s) - 减小
             },
+            # 阵风/湍流：振幅减小，数量减少，代表更小的波动
             'gusts': [
-                {'amp': np.array([0.05, 0.05, 0.05]), 'freq': np.array([2.2, 2.9, 1.5]), 'phase': np.array([0.1, 1.5, 3.0])},
-                {'amp': np.array([0.1, 0.15, 0.02]), 'freq': np.array([3.5, 3.1, 4.0]), 'phase': np.array([0.5, 2.5, 1.0])},
+                {'amp': np.array([0.05, 0.05, 0.05]), 'freq': np.array([2.2, 2.9, 1.5]), 'phase': np.array([0.1, 1.5, 3.0])}, # 振幅减小
+                {'amp': np.array([0.1, 0.15, 0.02]), 'freq': np.array([3.5, 3.1, 4.0]), 'phase': np.array([0.5, 2.5, 1.0])}, # 振幅减小
+                # 移除了最高频的阵风分量以减少整体波动
             ]
         }
-    
-    def _log_init(self):
-        """打印初始化信息。"""
-        print(f"💨 [Wind Model] Multi-sinusoid wind model initialized.")
-        print(f"    - Offset: {self.params['base_wind']['offset']} m/s")
-        print(f"    - Ramp Slope: {self.params.get('ramp_slope', np.zeros(3))} m/s²")
-        print(f"    - Base Amplitude: {self.params['base_wind']['amp']} m/s")
-        print(f"    - Gust components: {len(self.params['gusts'])}")
-    
+        self.params = wind_vel_params
+        print(f"💨 [高级风场] 多正弦波叠加风场模型已初始化。")
+        print(f"    - 初始偏置 (Offset): {self.params['base_wind']['offset']} m/s")
+        print(f"    - 增长斜率 (Ramp Slope): {self.params.get('ramp_slope', np.zeros(3))} m/s²")
+        print(f"    - 主风振幅 (Base Amp): {self.params['base_wind']['amp']} m/s")
+        print(f"    - 主风频率 (Base Freq): {self.params['base_wind']['freq']} rad/s")
+        print(f"    - 阵风分量数量: {len(self.params['gusts'])}")
+
     def get_wind_velocity(self, t):
-        """
-        获取指定时间的风速向量（世界坐标系）。
+        """根据时间 t 获取世界坐标系下的总风速向量。"""
+        # X轴风速: f(t) = 1.3 * arctan(t - 4) + 1.8 + 0.2 * sin(0.7 * t)
+        wind_x = 1.3 * np.arctan(t - 4) + 2.0 + 0.2 * np.sin(0.7 * t)
         
-        使用简化的arctan+sin组合模型。
+        # Y轴风速: g(t) = -1.0 * arctan(t - 9) - 0.5 + 0.2 * sin(0.5 * t)
+        wind_y = -1.0 * np.arctan(t - 9) - 0.5 + 0.2 * np.sin(0.5 * t)
         
-        Args:
-            t: 时间 (秒)
+        # Z轴风速 (未指定，设为0)
+        wind_z = 0.6 + 0.05 * np.sin(0.1 * t) + 0.05 * np.sin(1.5 * t) + 0.02 * np.sin(4.0 * t)
             
-        Returns:
-            np.ndarray: 3D风速向量 [vx, vy, vz] (m/s)
-        """
-        wind_x = 1.0 + 0.03 * np.sin(0.6 * t)
-        wind_y = -0.4 + 0.01 * np.sin(0.5 * t)
-        wind_z = 0.06 + 0.01 * np.sin(0.5 * t)
         return np.array([wind_x, wind_y, wind_z])
-    
-    def get_wind_velocity_full(self, t):
-        """
-        使用完整多正弦波模型计算风速。
-        
-        Args:
-            t: 时间 (秒)
-            
-        Returns:
-            np.ndarray: 3D风速向量 [vx, vy, vz] (m/s)
-        """
-        p = self.params
-        base = p['base_wind']
-        ramp_effect = p.get('ramp_slope', np.zeros(3)) * t
-        wind_velocity = base['offset'] + ramp_effect + base['amp'] * np.sin(base['freq'] * t + base['phase'])
-        
-        for gust in p['gusts']:
-            wind_velocity += gust['amp'] * np.sin(gust['freq'] * t + gust['phase'])
-        
-        return wind_velocity
-    
-    def visualize(self, duration=20, save=True):
-        """
-        可视化风速模型。
-        
-        Args:
-            duration: 可视化时长 (秒)
-            save: 是否保存图像
-        """
-        set_publication_style(base_size=9)
-        
+
+    def visualize(self, duration=20):
+        """可视化风速模型在一段时间内的函数图像，将三轴风速绘制在同一张图中。"""
+        set_publication_style(base_size=9)  # 设置专业的出版物风格
+
         t_span = np.linspace(0, duration, 500)
         wind_velocities = np.array([self.get_wind_velocity(t) for t in t_span])
-        
+
         fig, ax = plt.subplots(figsize=(3.5, 2.2))
-        axis_labels = ['X-axis', 'Y-axis', 'Z-axis']
-        colors = ['#FD763F', '#23BAC5', '#EECA40']
-        
+        axis_labels, colors = ['X-axis', 'Y-axis', 'Z-axis'], ['#d62728', '#1f77b4', '#2ca02c']
         for i in range(3):
-            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=1.25, label=axis_labels[i])
-        
+            ax.plot(t_span, wind_velocities[:, i], color=colors[i], linewidth=1.5, label=f'{axis_labels[i]}')
         ax.set_xlabel('Time [s]')
         ax.set_ylabel('Velocity [m/s]')
         ax.grid(True)
+
+        #显示图例
         ax.legend(loc='upper right', frameon=True)
         fig.tight_layout()
-        
-        if save:
-            fig_path = os.path.join(DirectoryConfig.FIGURES_DIR, 'wind_velocity_visualization')
-            plt.savefig(fig_path + '.pdf', bbox_inches="tight")
-            plt.savefig(fig_path + '.svg', bbox_inches="tight")
-        
-        if SimpleSimConfig.show_intermediate_plots:
-            plt.show()
-        else:
-            plt.close()
+
+        # 保存图像
+        plt.savefig("wind_velocity_visualization.pdf", bbox_inches="tight")
+        # plt.show() # Commented out show to avoid blocking in non-interactive environment
+

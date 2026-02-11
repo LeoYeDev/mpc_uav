@@ -161,7 +161,7 @@ class Quad3DOptimizer:
             # When GP models are loaded, the dynamics contain GP-related symbols that need to be
             # included as inputs. For simplicity, use allow_free=True to avoid errors when
             # these functions are not actually used for direct evaluation.
-            opts = {'allow_free': True} if self.gp_reg_ensemble is not None else {}
+            opts = {'allow_free': True} if (self.gp_reg_ensemble is not None or self.use_online_gp) else {}
             self.quad_xdot[dyn_model_idx] = cs.Function('x_dot', [self.x, self.u], [dyn], 
                                                          ['x', 'u'], ['x_dot'], opts)
 
@@ -169,7 +169,7 @@ class Quad3DOptimizer:
         self.acados_ocp_solver = {}
 
         # Check if GP's have been loaded
-        self.with_gp = self.gp_reg_ensemble is not None
+        self.has_offline_gp = self.gp_reg_ensemble is not None
 
         # Add one more weight to the rotation (use quaternion norm weighting in acados)
         q_diagonal = np.concatenate((q_cost[:3], np.mean(q_cost[3:6])[np.newaxis], q_cost[3:]))
@@ -213,7 +213,7 @@ class Quad3DOptimizer:
 
             ocp.cost.W = np.diag(np.concatenate((q_diagonal, r_cost)))
             ocp.cost.W_e = np.diag(q_diagonal)
-            terminal_cost = 0 if solver_options is None or not solver_options["terminal_cost"] else 1
+            terminal_cost = 0 if solver_options is None or not solver_options.get("terminal_cost", False) else 1
             ocp.cost.W_e *= terminal_cost
 
             ocp.cost.Vx = np.zeros((ny, nx))
@@ -242,7 +242,7 @@ class Quad3DOptimizer:
             ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
             ocp.solver_options.integrator_type = 'ERK'
             ocp.solver_options.print_level = 0
-            ocp.solver_options.nlp_solver_type = 'SQP_RTI' if solver_options is None else solver_options["solver_type"]
+            ocp.solver_options.nlp_solver_type = 'SQP_RTI' if solver_options is None else solver_options.get("solver_type", 'SQP_RTI')
 
             # Compile acados OCP solver if necessary
             json_file = os.path.join(self.acados_models_dir, key_model.name + '_acados_ocp.json')
@@ -636,7 +636,7 @@ class Quad3DOptimizer:
             p_values = []
 
             # 1. 添加离线GP参数的数值 (如果存在)
-            if self.with_gp:
+            if self.has_offline_gp:
                 gp_state = gp_regression_state if gp_regression_state is not None else initial_state
                 trigger_val = 1.0 if j == 0 else 0.0
                 state_for_gp = gp_state if j == 0 else [0.0] * len(initial_state)

@@ -38,7 +38,7 @@ from src.utils.data_logger import DataLogger
 
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
                           t_horizon=1.0, q_diagonal=None, r_diagonal=None, q_mask=None,
-                          use_online_gp=False):
+                          use_online_gp=False, solver_options=None):
     """
     Creates a Quad3DMPC for the custom simulator.
     @param simulation_options: Parameters for the Quadrotor3D object.
@@ -50,6 +50,7 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
     @param q_diagonal: 12-dimensional diagonal of the Q matrix (p_xyz, a_xyz, v_xyz, w_xyz)
     @param r_diagonal: 4-dimensional diagonal of the R matrix (motor inputs 1-4)
     @param q_mask: State variable weighting mask (boolean). Which state variables compute towards state loss function?
+    @param solver_options: Optional dictionary of solver options (e.g. variance_scaling_alpha).
 
     @return: A Quad3DMPC wrapper for the custom simulator.
     @rtype: Quad3DMPC
@@ -101,21 +102,26 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
     quad_mpc = Quad3DMPC(my_quad, t_horizon=t_horizon, optimization_dt=node_dt, simulation_dt=simulation_dt,
                          q_cost=q_diagonal, r_cost=r_diagonal, n_nodes=n_mpc_nodes,
                          pre_trained_models=pre_trained_models, model_name=quad_name, q_mask=q_mask, rdrv_d_mat=rdrv_d,
-                         use_online_gp=use_online_gp)
+                         use_online_gp=use_online_gp, solver_options=solver_options)
 
     return quad_mpc
 
 
-def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=False, 
-         use_wind=False, use_gp_ject=False, model_type_perfect=False, online_gp_manager=None):
-    """
 
-    :param quad_mpc:
-    :type quad_mpc: Quad3DMPC
-    :param av_speed:
-    :param reference_type:S
-    :param plot:
-    :return:
+def main(quad_mpc, av_speed, reference_type=None, plot=False,
+         use_offline_gp=False, use_online_gp=False, 
+         online_gp_manager=None, model_label="nominal"):
+    """
+    Run tracking experiment with unified configuration.
+
+    :param quad_mpc: Quad3DMPC controller instance
+    :param av_speed: Average speed for trajectory
+    :param reference_type: Trajectory type
+    :param plot: Whether to plot real-time simulation
+    :param use_offline_gp: Whether offline GP is active (SGP)
+    :param use_online_gp: Whether online GP is active (AR)
+    :param online_gp_manager: Manager for online GP training
+    :param model_label: Label for result plotting and logging
     """
 
     # Recover some necessary variables from the MPC object
@@ -128,10 +134,8 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     mpc_period = t_horizon / (n_mpc_nodes * reference_over_sampling)
     #预测时长1s，一周期内点数为10，启用mpc周期0.02s
 
-    wind_model = None
-    use_wind = True
-    if use_wind: # 假设我们稍后会添加这个命令行参数
-        wind_model = RealisticWindModel()
+    # Initialize Wind Model (always used)
+    wind_model = RealisticWindModel()
 
     # Choose the reference trajectory:
     if reference_type == "loop":
@@ -184,14 +188,11 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     history_gp_input_velocities = [] 
     history_gp_target_residuals = [] 
     history_timestamps_for_gp = []  # 记录时间戳
-    collect_online_gp_data_flag = True  # Set to True to enable online GP data collection
-    # use_online_gp_ject = True
+    
     out_online_gp_manager = None  # 用于快照可视化的在线GP管理器
+    out_x_pred = None
+    out_total_sim_time = 0.0
     visualized_all = False
-
-    if collect_online_gp_data_flag and use_online_gp_ject:
-        pass  # 静默激活
-        
 
     while (time.time() - start_time) < max_simulation_time and current_idx < reference_traj.shape[0]:
 
@@ -212,7 +213,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
         # ========================================================================
         online_predictions = None
         online_variances = None
-        if online_gp_manager and any(gp.is_trained_once for gp in online_gp_manager.gps):
+        
+        # Check if we should use online GP predictions
+        if online_gp_manager and use_online_gp and any(gp.is_trained_once for gp in online_gp_manager.gps):
             # 1. 使用上一步MPC规划的轨迹(x_pred)作为对未来状态的近似
             # 2. 将世界系速度转换为机体坐标系速度
             planned_states_body = world_to_body_velocity_mapping(x_pred)
@@ -241,19 +244,17 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
         simulation_time = 0.0
         
         # --- ADDED: 在线GP的数据收集
-        if collect_online_gp_data_flag and use_online_gp_ject : 
+        if online_gp_manager and use_online_gp: 
             s_before_sim  = quad_mpc.get_state()
-            v_body_in = s_before_sim .T
+            v_body_in = s_before_sim.T
             v_body_in = world_to_body_velocity_mapping(v_body_in)
             v_body_in = np.squeeze(v_body_in[:,7:10])  # Extract only the velocity components
             history_gp_input_velocities.append(v_body_in.copy())
         # --- END ADDED:
 
         # --- 核心修改：基于无人机完整状态计算风力 ---
-        ext_v_k = None
-        if use_wind is not None:
-            # 直接将当前13维状态向量传入
-            ext_v_k = wind_model.get_wind_velocity(total_sim_time)
+        # 直接将当前13维状态向量传入 (时间)
+        ext_v_k = wind_model.get_wind_velocity(total_sim_time)
         # ---------------------------------------------
 
         # ##### Simulation runtime (inner loop) ##### #
@@ -264,10 +265,10 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
 
 
         # --- ADDED: 在线GP的数据收集与异步更新
-        if online_gp_manager : 
+        if online_gp_manager and use_online_gp: 
             #推演后的状态
             s_after_sim  = quad_mpc.get_state()
-            v_body_out = s_after_sim .T
+            v_body_out = s_after_sim.T
             v_body_out = world_to_body_velocity_mapping(v_body_out)
             v_body_out = np.squeeze(v_body_out[:,7:10])  # Extract only the velocity components
 
@@ -282,27 +283,18 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
             v_body_predic = world_to_body_velocity_mapping(v_body_predic)
             v_body_predic = np.squeeze(v_body_predic[:,7:10])   # Extract only the velocity components
 
-            # 实际加速度偏差
-            # x_predic2, _ = quad_mpc.forward_prop(np.squeeze(quad_current_state), w_opt=w_opt[:4],
-            #                                   t_horizon=simulation_time, use_gp=False)
-            # x_predic2 = x_predic2[[-1], :]
-            # x_predic2 = world_to_body_velocity_mapping(x_predic2)
-            # x_predic2 = np.squeeze(x_predic2[:,7:10])  # Extract only the velocity components
-            # print(f"------: GP Predicted state: {x_predic}, Model predicted state: {x_predic2}")
-
             residual_acc_body = v_body_out - v_body_predic
             residual_acc_body /= simulation_time
 
             #存储数据
             history_gp_target_residuals.append(residual_acc_body.copy())
             history_timestamps_for_gp.append(total_sim_time) # 记录当前数据点的时间戳
-            # print(f"*******: Collected data for online GP: {x_in} -> {y_err}")
             
             #更新在线GP
             update_start_time = time.time()
 
             # --- 异步更新与轮询 ---
-            online_gp_manager.update(v_body_in, residual_acc_body)
+            online_gp_manager.update(v_body_in, residual_acc_body, timestamp=total_sim_time)
             online_gp_manager.poll_for_results()
 
             mean_opt_time += time.time() - update_start_time
@@ -332,16 +324,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,use_online_gp_ject=
     rmse = interpol_mse(reference_timestamps, reference_traj[:, :3], reference_timestamps, quad_trajectory[:, :3])
     max_vel = np.max(np.sqrt(np.sum(reference_traj[:, 7:10] ** 2, 1)))
 
-    #title = r'$v_{max}$=%.2f m/s | RMSE: %.4f m | %s ' % (max_vel, float(rmse), legends)
-    #如果使用AR
-    if online_gp_manager and use_online_gp_ject:
-        title = r'$AR-MPC: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
-    elif use_gp_ject is True:
-        title = r'$SGP-MPC: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
-    elif model_type_perfect:
-        title = r'$Perfect: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
-    else:
-        title = r'$Nominal: \, v_{\mathrm{max}} = %.2f \, \mathrm{m/s}, \, RMSE = %.3f \, \mathrm{m}$' % (max_vel, rmse)
+    # Use model_label for the title
+    title = rf'${model_label}: \, v_{{\mathrm{{max}}}} = {max_vel:.2f} \, \mathrm{{m/s}}, \, RMSE = {rmse:.3f} \, \mathrm{{m}}$'
+    
     print(f'\n--- Simulation finished ---\n')
     print(f'Average optimization time: {mean_opt_time:.4f} s')
     print(f'RMSE: {rmse:.4f} m')
@@ -452,7 +437,8 @@ if __name__ == '__main__':
     # 只运行AR-MPC模型（在线GP增量修正）
     model_vec = [{
         "simulation_options": noisy_sim_options,
-        "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True}
+        "model": {"version": git_list, "name": name_list, "reg_type": type_list, 'use_online_gp': True},
+        "description": "AR-MPC" # Added description
     }]
     legends = ['AR']
     
@@ -468,18 +454,19 @@ if __name__ == '__main__':
     for n_train_id, model_type in enumerate(model_vec):
         # Initialize online GP manager if needed
         online_gp_manager = None
-        use_online_gp_ject = False
+        use_online_gp = False
         if model_type["model"] and model_type["model"].get("use_online_gp", False):
-            use_online_gp_ject = True
+            use_online_gp = True
             online_gp_manager = IncrementalGPManager(config=OnlineGPConfig().to_dict())
+        
         if model_type["model"] is not None:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"], **model_type["model"])
-            model_type_perfect = False
-            use_gp_ject = True
+            use_offline_gp = True
         else:
             custom_mpc = prepare_quadrotor_mpc(model_type["simulation_options"])
-            model_type_perfect = not model_type["simulation_options"]["noisy"]
-            use_gp_ject = False
+            use_offline_gp = False
+
+        model_desc = model_type.get("description", legends[n_train_id])
 
         for traj_id, traj_type in enumerate(traj_type_vec):
 
@@ -492,9 +479,12 @@ if __name__ == '__main__':
                     online_gp_manager.reset()
                 # --- 修改结束 --
                 (mse[traj_id, v_id, n_train_id], traj_v, opt_dt,
-                 t_ref, x_ref, x_executed) = main(custom_mpc, **traj_params, use_online_gp_ject=use_online_gp_ject,
-                                     use_gp_ject=use_gp_ject, model_type_perfect = model_type_perfect,
-                                     online_gp_manager=online_gp_manager)
+                 t_ref, x_ref, x_executed) = main(custom_mpc, 
+                                                  **traj_params, 
+                                                  use_online_gp=use_online_gp,
+                                                  use_offline_gp=use_offline_gp, 
+                                                  model_label=model_desc,
+                                                  online_gp_manager=online_gp_manager)
                 
                 t_opt[traj_id, v_id, n_train_id] += opt_dt
                 if v_max[traj_id, v_id] == 0:

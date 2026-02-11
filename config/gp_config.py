@@ -48,7 +48,10 @@ class OnlineGPConfig:
     main_process_device: str = 'cpu'
     worker_device_str: str = 'cpu'
     buffer_max_size: int = 30
-    novelty_weight: float = 0.7
+    novelty_weight: float = 0.1
+    recency_weight: float = 0.9
+    recency_decay_rate: float = 0.1
+    buffer_min_distance: float = 0.01
     error_threshold: float = 0.15
     min_points_for_initial_train: int = 15
     refit_hyperparams_interval: int = 10
@@ -71,6 +74,9 @@ class OnlineGPConfig:
             'worker_device_str': self.worker_device_str,
             'buffer_max_size': self.buffer_max_size,
             'novelty_weight': self.novelty_weight,
+            'recency_weight': self.recency_weight,
+            'recency_decay_rate': self.recency_decay_rate,
+            'buffer_min_distance': self.buffer_min_distance,
             'error_threshold': self.error_threshold,
             'min_points_for_initial_train': self.min_points_for_initial_train,
             'refit_hyperparams_interval': self.refit_hyperparams_interval,

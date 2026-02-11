@@ -60,112 +60,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
 
 
 
-
-class InformationGainBuffer:
-    """
-    基于信息增益评分的数据缓冲区。
-    - 结合新颖性（与现有点的距离）和时效性（时间衰减）来评估数据价值
-    - 当缓冲区满时，移除信息价值最低的点
-    """
-    def __init__(self, max_size: int, novelty_weight: float = 0.7, min_distance: float = 0.01):
-        """
-        Args:
-            max_size: 缓冲区最大容量
-            novelty_weight: 新颖性权重 (0-1)，剩余为时效性权重
-            min_distance: 最小距离阈值，低于此值的点被认为是重复的
-        """
-        self.max_size = max_size
-        self.novelty_weight = novelty_weight
-        self.recency_weight = 1.0 - novelty_weight
-        self.min_distance = min_distance
-        self.data = []  # List of (v, y, insertion_time)
-        self.total_adds = 0
-    
-    def _compute_novelty(self, v_new: float) -> float:
-        """计算新点相对于现有点的新颖性得分。"""
-        if not self.data:
-            return 1.0
-        distances = [abs(v_new - p[0]) for p in self.data]
-        min_dist = min(distances)
-        # 归一化到 [0, 1]，距离越大新颖性越高
-        return min(min_dist / (self.min_distance * 10 + 1e-7), 1.0)
-    
-    def _compute_scores(self) -> np.ndarray:
-        """计算所有现有点的信息价值得分。"""
-        if len(self.data) <= 1:
-            return np.ones(len(self.data))
-        
-        n = len(self.data)
-        scores = np.zeros(n)
-        
-        for i, (v_i, y_i, t_i) in enumerate(self.data):
-            # 新颖性：到其他点的最小距离
-            distances = [abs(v_i - p[0]) for j, p in enumerate(self.data) if j != i]
-            novelty = min(distances) if distances else 0.0
-            
-            # 时效性：基于插入顺序（较新的点得分更高）
-            recency = t_i / self.total_adds if self.total_adds > 0 else 1.0
-            
-            scores[i] = self.novelty_weight * novelty + self.recency_weight * recency
-        
-        return scores
-    
-    def insert(self, v_scalar: float, y_scalar: float) -> None:
-        """插入新数据点，必要时移除最低价值的点。"""
-        self.total_adds += 1
-        
-        # 检查是否与现有点太接近（重复）
-        novelty = self._compute_novelty(v_scalar)
-        if novelty < 0.05 and len(self.data) >= self.max_size // 2:
-            # 太接近现有点，跳过插入
-            return
-        
-        new_point = (v_scalar, y_scalar, self.total_adds)
-        
-        if len(self.data) < self.max_size:
-            self.data.append(new_point)
-        else:
-            # 缓冲区已满，找到并替换最低价值的点
-            scores = self._compute_scores()
-            min_idx = np.argmin(scores)
-            self.data[min_idx] = new_point
-    
-    def get_training_set(self) -> list:
-        """获取用于训练的数据集（不含时间戳）。"""
-        return [(p[0], p[1]) for p in self.data]
-    
-    def reset(self):
-        """清空缓冲区。"""
-        self.data = []
-        self.total_adds = 0
-    
-    def __len__(self):
-        return len(self.data)
-
-
-class FIFOBuffer:
-    """
-    简单的先进先出 (FIFO) 缓冲区，用于消融实验对比。
-    当缓冲区满时，移除最旧的数据点。
-    """
-    def __init__(self, max_size: int):
-        self.max_size = max_size
-        self.data = deque(maxlen=max_size)
-    
-    def insert(self, v_scalar: float, y_scalar: float) -> None:
-        """插入新数据点，自动移除最旧的点。"""
-        self.data.append((v_scalar, y_scalar))
-    
-    def get_training_set(self) -> list:
-        """获取用于训练的数据集。"""
-        return list(self.data)
-    
-    def reset(self):
-        """清空缓冲区。"""
-        self.data.clear()
-    
-    def __len__(self):
-        return len(self.data)
+from src.gp.buffer import InformationGainBuffer, FIFOBuffer
 
 
 # =================================================================================
@@ -293,8 +188,17 @@ class IncrementalGP:
             self.buffer = FIFOBuffer(max_size)
         else:
             # 默认：基于信息增益评分的智能缓冲区 (IVS)
-            novelty_weight = config.get('novelty_weight', 0.7)
-            self.buffer = InformationGainBuffer(max_size, novelty_weight)
+            novelty_weight = float(config.get('novelty_weight', 0.1))
+            recency_weight = float(config.get('recency_weight', max(0.0, 1.0 - novelty_weight)))
+            recency_decay_rate = float(config.get('recency_decay_rate', 0.1))
+            min_distance = float(config.get('buffer_min_distance', 0.01))
+            self.buffer = InformationGainBuffer(
+                max_size=max_size,
+                novelty_weight=novelty_weight,
+                recency_weight=recency_weight,
+                decay_rate=recency_decay_rate,
+                min_distance=min_distance
+            )
 
         # 批量归一化统计量（每次从缓冲区计算，避免EMA漂移）
         self._cached_norm_stats = None  # (v_mean, v_std, r_mean, r_std)
@@ -315,11 +219,15 @@ class IncrementalGP:
         self.is_training_in_progress = False # 后台是否正在为此维度进行训练
         self.last_training_history = TrainingHistory() # 保存最近一次的训练历史
 
-    def add_data_point(self, x, y):
+    def add_data_point(self, x, y, timestamp=None):
+        if timestamp is None:
+            timestamp = time.time()
         # --- 修改：同时向两个缓冲区添加数据 ---
         # self.full_history_buffer.append((x, y)) # 1. 记录到完整历史中
-        self.buffer.insert(x, y)
+        self.buffer.insert(x, y, timestamp)
         self.updates_since_last_train += 1
+
+
     
     def get_and_normalize_data(self):
         """获取并归一化所有数据。使用批量统计量避免EMA漂移，确保训练和预测一致。"""
@@ -430,6 +338,7 @@ class IncrementalGPManager:
         self.config = config
         self.num_dimensions = config.get('num_dimensions', 3)
         self.gps = [IncrementalGP(i, config) for i in range(self.num_dimensions)]
+        self._is_shutdown = False
         
         # 为每个worker创建一个专属的任务队列
         self.task_queues = [Queue() for _ in range(self.num_dimensions)]
@@ -456,31 +365,35 @@ class IncrementalGPManager:
         
         # 注册自动清理
         atexit.register(self.shutdown)
-        # 注意: 信号处理是全局的，可能会覆盖其他处理程序。
-        # 在复杂的应用程序中，应谨慎使用。
-        try:
-            signal.signal(signal.SIGINT, self._signal_handler)
-            signal.signal(signal.SIGTERM, self._signal_handler)
-        except ValueError:
-            # 当不在主线程运行时，无法设置信号处理程序
-            pass
+        # 注意: 信号处理是全局的，默认关闭，避免覆盖实验脚本的处理逻辑。
+        if config.get('register_signal_handlers', False):
+            try:
+                signal.signal(signal.SIGINT, self._signal_handler)
+                signal.signal(signal.SIGTERM, self._signal_handler)
+            except ValueError:
+                # 当不在主线程运行时，无法设置信号处理程序
+                pass
 
     def _signal_handler(self, signum, frame):
         print(f"\n[管理器] 捕获信号 {signum}，正在强制关闭...")
         self.shutdown()
         sys.exit(0)
 
-    def update(self, new_velocities: np.ndarray, new_residuals: np.ndarray) -> None:
+    def update(self, new_velocities: np.ndarray, new_residuals: np.ndarray, timestamp=None) -> None:
         """
         非阻塞更新：添加数据点，并根据条件触发后台训练任务。
         
         Args:
             new_velocities (np.ndarray): 输入速度向量 (num_dimensions,)
             new_residuals (np.ndarray): 目标残差向量 (num_dimensions,)
+            timestamp (float): 数据的时间戳
         """
+        if timestamp is None:
+            timestamp = time.time()
+
         for i in range(self.num_dimensions):
             gp = self.gps[i]
-            gp.add_data_point(new_velocities[i], new_residuals[i])
+            gp.add_data_point(new_velocities[i], new_residuals[i], timestamp)
             
             if gp.is_training_in_progress: 
                 continue
@@ -518,6 +431,9 @@ class IncrementalGPManager:
 
     def shutdown(self):
         """优雅地关闭所有后台工作进程。"""
+        if self._is_shutdown:
+            return
+        self._is_shutdown = True
         print("\n gracefully shutting down all background worker processes...")
         self.stop_event.set()
         for q in self.task_queues:
@@ -821,4 +737,3 @@ if __name__ == '__main__':
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.show()
-
