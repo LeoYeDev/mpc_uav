@@ -17,7 +17,7 @@ class RealisticWindModel:
     一个更符合物理现实的风场模型，基于多正弦波叠加。
     它模拟了一个缓慢变化的主风场，并叠加了多个频率和振幅不同的阵风分量。
     """
-    def __init__(self):
+    def __init__(self, profile="default"):
         """
         定义风场模型的参数。
         - base_wind: 定义了缓慢变化的主风。
@@ -42,7 +42,9 @@ class RealisticWindModel:
             ]
         }
         self.params = wind_vel_params
+        self.profile = str(profile)
         print(f"💨 [高级风场] 多正弦波叠加风场模型已初始化。")
+        print(f"    - 风场模式 (Profile): {self.profile}")
         print(f"    - 初始偏置 (Offset): {self.params['base_wind']['offset']} m/s")
         print(f"    - 增长斜率 (Ramp Slope): {self.params.get('ramp_slope', np.zeros(3))} m/s²")
         print(f"    - 主风振幅 (Base Amp): {self.params['base_wind']['amp']} m/s")
@@ -51,6 +53,13 @@ class RealisticWindModel:
 
     def get_wind_velocity(self, t):
         """根据时间 t 获取世界坐标系下的总风速向量。"""
+        if self.profile == "regime_shift":
+            return self._get_regime_shift_wind(t)
+
+        return self._get_default_wind(t)
+
+    def _get_default_wind(self, t):
+        """Original smooth wind profile."""
         # X轴风速: f(t) = 1.3 * arctan(t - 4) + 1.8 + 0.2 * sin(0.7 * t)
         wind_x = 1.3 * np.arctan(t - 4) + 2.0 + 0.2 * np.sin(0.7 * t)
         
@@ -60,6 +69,21 @@ class RealisticWindModel:
         # Z轴风速 (未指定，设为0)
         wind_z = 0.6 + 0.05 * np.sin(0.1 * t) + 0.05 * np.sin(1.5 * t) + 0.02 * np.sin(4.0 * t)
             
+        return np.array([wind_x, wind_y, wind_z])
+
+    def _get_regime_shift_wind(self, t):
+        """
+        Stronger non-stationary profile with regime changes and burst gusts.
+        Useful for stressing online adaptation quality.
+        """
+        s1 = np.tanh((t - 5.0) / 1.5)
+        s2 = np.tanh((t - 12.0) / 1.8)
+        burst = np.exp(-0.5 * ((t - 9.0) / 0.7) ** 2) - 0.85 * np.exp(-0.5 * ((t - 15.0) / 1.1) ** 2)
+
+        wind_x = 1.6 + 0.8 * s1 + 0.9 * s2 + 0.25 * np.sin(0.9 * t) + 0.12 * np.sin(3.0 * t) + 0.45 * burst
+        wind_y = -0.9 - 0.6 * s1 + 0.7 * s2 + 0.18 * np.sin(0.7 * t + 0.8) + 0.10 * np.sin(2.5 * t) - 0.30 * burst
+        wind_z = 0.4 + 0.12 * np.sin(0.2 * t) + 0.08 * np.sin(1.8 * t) + 0.03 * np.sin(4.5 * t)
+
         return np.array([wind_x, wind_y, wind_z])
 
     def visualize(self, duration=20):
@@ -84,4 +108,3 @@ class RealisticWindModel:
         # 保存图像
         plt.savefig("wind_velocity_visualization.pdf", bbox_inches="tight")
         # plt.show() # Commented out show to avoid blocking in non-interactive environment
-

@@ -33,6 +33,7 @@ class OnlineGPConfig:
         worker_device_str: 工作进程使用的设备 (多进程必须使用 'cpu')
         buffer_max_size: 缓冲区中的最大点数
         novelty_weight: 缓冲区评分中新颖性相对于新近性的权重 (0-1)
+        ivs_multilevel: 是否启用多级 IVS 缓冲区
         error_threshold: 触发重训练的预测误差阈值 (m/s^2)
         min_points_for_initial_train: 触发首次训练所需的最小点数
         refit_hyperparams_interval: 重训练之间的更新次数间隔
@@ -47,11 +48,15 @@ class OnlineGPConfig:
     num_dimensions: int = 3
     main_process_device: str = 'cpu'
     worker_device_str: str = 'cpu'
-    buffer_max_size: int = 30
-    novelty_weight: float = 0.1
-    recency_weight: float = 0.9
+    buffer_max_size: int = 20
+    novelty_weight: float = 0.35
+    recency_weight: float = 0.65
     recency_decay_rate: float = 0.1
     buffer_min_distance: float = 0.01
+    ivs_multilevel: bool = True
+    buffer_level_capacities: List[int] = field(default_factory=lambda: [14, 4, 2])
+    buffer_level_sparsity: List[int] = field(default_factory=lambda: [1, 4, 8])
+    buffer_merge_min_distance: float = 0.01
     error_threshold: float = 0.15
     min_points_for_initial_train: int = 15
     refit_hyperparams_interval: int = 10
@@ -77,6 +82,10 @@ class OnlineGPConfig:
             'recency_weight': self.recency_weight,
             'recency_decay_rate': self.recency_decay_rate,
             'buffer_min_distance': self.buffer_min_distance,
+            'ivs_multilevel': self.ivs_multilevel,
+            'buffer_level_capacities': self.buffer_level_capacities,
+            'buffer_level_sparsity': self.buffer_level_sparsity,
+            'buffer_merge_min_distance': self.buffer_merge_min_distance,
             'error_threshold': self.error_threshold,
             'min_points_for_initial_train': self.min_points_for_initial_train,
             'refit_hyperparams_interval': self.refit_hyperparams_interval,

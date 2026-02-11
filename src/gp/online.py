@@ -60,7 +60,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
 
 
 
-from src.gp.buffer import InformationGainBuffer, FIFOBuffer
+from src.gp.buffer import InformationGainBuffer, FIFOBuffer, MultiLevelInformationGainBuffer
 
 
 # =================================================================================
@@ -182,13 +182,33 @@ class IncrementalGP:
         # 数据缓冲区 - 根据config选择缓冲区类型
         max_size = config.get('buffer_max_size', 30)
         buffer_type = config.get('buffer_type', 'ivs')
+        use_multilevel_ivs = bool(config.get('ivs_multilevel', True))
         
         if buffer_type == 'fifo':
             # 简单的FIFO缓冲区（用于消融实验对比）
             self.buffer = FIFOBuffer(max_size)
+        elif buffer_type in ('ivs', 'ivs_multilevel') and use_multilevel_ivs:
+            # 多级 IVS: 近期层 + 中期层 + 长期层，提升速度域覆盖率
+            novelty_weight = float(config.get('novelty_weight', 0.2))
+            recency_weight = float(config.get('recency_weight', max(0.0, 1.0 - novelty_weight)))
+            recency_decay_rate = float(config.get('recency_decay_rate', 0.1))
+            min_distance = float(config.get('buffer_min_distance', 0.01))
+            level_capacities = config.get('buffer_level_capacities', None)
+            level_sparsity = config.get('buffer_level_sparsity', None)
+            merge_min_distance = float(config.get('buffer_merge_min_distance', min_distance))
+            self.buffer = MultiLevelInformationGainBuffer(
+                max_size=max_size,
+                novelty_weight=novelty_weight,
+                recency_weight=recency_weight,
+                decay_rate=recency_decay_rate,
+                min_distance=min_distance,
+                level_capacities=level_capacities,
+                level_sparsity=level_sparsity,
+                merge_min_distance=merge_min_distance,
+            )
         else:
             # 默认：基于信息增益评分的智能缓冲区 (IVS)
-            novelty_weight = float(config.get('novelty_weight', 0.1))
+            novelty_weight = float(config.get('novelty_weight', 0.2))
             recency_weight = float(config.get('recency_weight', max(0.0, 1.0 - novelty_weight)))
             recency_decay_rate = float(config.get('recency_decay_rate', 0.1))
             min_distance = float(config.get('buffer_min_distance', 0.01))
@@ -337,6 +357,15 @@ class IncrementalGPManager:
     def __init__(self, config: dict):
         self.config = config
         self.num_dimensions = config.get('num_dimensions', 3)
+        self.buffer_max_size = int(config.get('buffer_max_size', 30))
+        self.min_points_for_initial_train = int(config.get('min_points_for_initial_train', 50))
+        if self.min_points_for_initial_train > self.buffer_max_size:
+            # Avoid a dead zone where online GP can never trigger initial training.
+            self.min_points_for_initial_train = max(2, self.buffer_max_size)
+            print(
+                f"[GPManager] min_points_for_initial_train exceeds buffer size; "
+                f"clamped to {self.min_points_for_initial_train}."
+            )
         self.gps = [IncrementalGP(i, config) for i in range(self.num_dimensions)]
         self._is_shutdown = False
         
@@ -402,7 +431,7 @@ class IncrementalGPManager:
             num_training_points = len(gp.buffer.get_training_set())
             should_trigger = False
             # 条件1: 首次训练
-            if not gp.is_trained_once and num_training_points >= self.config.get('min_points_for_initial_train', 50):
+            if not gp.is_trained_once and num_training_points >= self.min_points_for_initial_train:
                 should_trigger = True
             # 条件2: 定期再训练
             elif gp.is_trained_once and gp.updates_since_last_train >= self.config.get('refit_hyperparams_interval', 100):

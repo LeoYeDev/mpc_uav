@@ -70,3 +70,6 @@ acados_models/
 
 #paper
 Manuscript_anonymous.pdf
+
+#figures
+outputs/figures/

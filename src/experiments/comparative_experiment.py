@@ -110,7 +110,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
 
 def main(quad_mpc, av_speed, reference_type=None, plot=False,
          use_offline_gp=False, use_online_gp=False, 
-         online_gp_manager=None, model_label="nominal"):
+         online_gp_manager=None, model_label="nominal",
+         wind_profile="default", trajectory_seed=303):
     """
     Run tracking experiment with unified configuration.
 
@@ -135,7 +136,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     #预测时长1s，一周期内点数为10，启用mpc周期0.02s
 
     # Initialize Wind Model (always used)
-    wind_model = RealisticWindModel()
+    wind_model = RealisticWindModel(profile=wind_profile)
 
     # Choose the reference trajectory:
     if reference_type == "loop":
@@ -151,7 +152,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     else:
         # Get a random smooth position trajectory
         reference_traj, reference_timestamps, reference_u = random_trajectory(
-            quad=my_quad, discretization_dt=mpc_period, seed=303, speed=av_speed, plot=plot)
+            quad=my_quad, discretization_dt=mpc_period, seed=trajectory_seed, speed=av_speed, plot=plot)
 
     # Set quad initial state equal to the initial reference trajectory state
     quad_current_state = reference_traj[0, :].tolist()

@@ -1,14 +1,16 @@
 """
-Simplified Ablation Experiment for Variance-Aware GP-MPC.
+Focused Ablation Experiment for FIFO vs IVS (online GP only).
 
-This script runs ablations by leveraging the existing comparative_experiment infrastructure
-which has correct online GP training and simulation loops.
+This script narrows the comparison to online buffer strategies under
+full GP trust (variance_scaling_alpha = 0), to isolate the effect of
+the data-flow management policy itself.
 
 Run: python src/experiments/ablation_experiment.py --speed 2.7
 """
 import numpy as np
 import multiprocessing
 import os
+import random
 import matplotlib.pyplot as plt
 from dataclasses import replace
 
@@ -22,6 +24,10 @@ try:
     warnings.simplefilter("ignore", NumericalWarning)
 except ImportError:
     pass
+try:
+    import torch
+except ImportError:
+    torch = None
 
 # Import from comparative_experiment
 from src.experiments.comparative_experiment import prepare_quadrotor_mpc, main as run_tracking
@@ -32,80 +38,131 @@ from src.gp.online import IncrementalGPManager
 # Ablation Configurations
 # ============================================================================
 
-def get_ablation_configs():
-    """Generate ablation configurations matching reviewer requirements."""
+def get_ablation_configs(preset="baseline"):
+    """
+    Focused configs:
+    1) FIFO
+    2) IVS (default weights)
+    3) IVS with novelty_weight=0 (pure recency test)
+
+    All use alpha=0 (full GP trust) to remove variance-scaling effects.
+    """
     base_gp_config = OnlineGPConfig()
-    
+    alpha = 0.0
+
+    if preset == "contrast":
+        # Controlled stress preset: keep both methods trainable while
+        # shrinking memory and amplifying IVS's strength in sparse coverage.
+        common = dict(
+            buffer_max_size=14,
+            min_points_for_initial_train=10,  # must stay <= buffer size
+            refit_hyperparams_interval=6,
+            worker_train_iters=24,
+            recency_decay_rate=0.12,
+        )
+        fifo_gp = replace(
+            base_gp_config,
+            buffer_type='fifo',
+            variance_scaling_alpha=alpha,
+            **common,
+        )
+        ivs_gp = replace(
+            base_gp_config,
+            buffer_type='ivs',
+            variance_scaling_alpha=alpha,
+            novelty_weight=0.45,
+            recency_weight=0.55,
+            buffer_min_distance=0.02,
+            buffer_merge_min_distance=0.025,
+            ivs_multilevel=True,
+            buffer_level_capacities=[8, 4, 2],
+            buffer_level_sparsity=[1, 3, 6],
+            **common,
+        )
+        ivs_single_gp = replace(
+            ivs_gp,
+            ivs_multilevel=False,
+            buffer_min_distance=0.015,
+            buffer_merge_min_distance=0.015,
+        )
+        ivs_novelty0_gp = replace(
+            ivs_gp,
+            novelty_weight=0.0,
+            recency_weight=1.0,
+        )
+    else:
+        fifo_gp = replace(
+            base_gp_config,
+            buffer_type='fifo',
+            variance_scaling_alpha=alpha,
+        )
+        ivs_gp = replace(
+            base_gp_config,
+            buffer_type='ivs',
+            variance_scaling_alpha=alpha,
+        )
+        ivs_single_gp = replace(
+            base_gp_config,
+            buffer_type='ivs',
+            ivs_multilevel=False,
+            variance_scaling_alpha=alpha,
+        )
+        ivs_novelty0_gp = replace(
+            base_gp_config,
+            buffer_type='ivs',
+            novelty_weight=0.0,
+            recency_weight=1.0,
+            variance_scaling_alpha=alpha,
+        )
+
     return {
-        # Baseline: Nominal MPC (no GP at all)
-        "nominal": {
-            "description": "Nominal MPC",
-            "use_offline_gp": False,
-            "use_online_gp": False,
-            "gp_config": None,
-            "solver_options": {},
-        },
-        
-        # (b) Without Online GP - Static GP only (SGP-MPC)
-        "sgp_mpc": {
-            "description": "SGP-MPC (Offline Only)",
-            "use_offline_gp": True,
-            "use_online_gp": False,
-            "gp_config": None,
-            "solver_options": {},
-        },
-        
-        # (c) Without IVS - Use FIFO buffer (AR-MPC with FIFO)
         "ar_mpc_fifo": {
-            "description": "AR-MPC (FIFO Buffer)",
+            "description": "AR-MPC (FIFO, alpha=0)",
             "use_offline_gp": True,
             "use_online_gp": True,
-            "gp_config": replace(base_gp_config, buffer_type='fifo', variance_scaling_alpha=1.0),
-            "solver_options": {"variance_scaling_alpha": 1.0},
+            "gp_config": fifo_gp,
+            "solver_options": {"variance_scaling_alpha": alpha},
         },
-        
-        # (d) Without Variance mechanism (alpha=0) (AR-MPC No Var)
-        "ar_mpc_no_var": {
-            "description": "AR-MPC (No Variance)",
+        "ar_mpc_ivs": {
+            "description": "AR-MPC (IVS, alpha=0)",
             "use_offline_gp": True,
             "use_online_gp": True,
-            "gp_config": replace(base_gp_config, variance_scaling_alpha=0.0),
-            "solver_options": {"variance_scaling_alpha": 0.0},
+            "gp_config": ivs_gp,
+            "solver_options": {"variance_scaling_alpha": alpha},
         },
-        
-        # Full System (all features enabled, α=1) (AR-MPC)
-        "ar_mpc": {
-            "description": "AR-MPC (Proposed)",
+        "ar_mpc_ivs_novelty0": {
+            "description": "AR-MPC (IVS novelty=0, alpha=0)",
             "use_offline_gp": True,
             "use_online_gp": True,
-            "gp_config": replace(base_gp_config, variance_scaling_alpha=1.0),
-            "solver_options": {"variance_scaling_alpha": 1.0},
+            "gp_config": ivs_novelty0_gp,
+            "solver_options": {"variance_scaling_alpha": alpha},
         },
-        
-        # Sensitivity: alpha = 0.5
-        "sensitivity_alpha_05": {
-            "description": "AR-MPC (Alpha=0.5)",
+        "ar_mpc_ivs_singlelevel": {
+            "description": "AR-MPC (IVS single-level, alpha=0)",
             "use_offline_gp": True,
             "use_online_gp": True,
-            "gp_config": replace(base_gp_config, variance_scaling_alpha=0.5),
-            "solver_options": {"variance_scaling_alpha": 0.5},
-        },
-        
-        # Sensitivity: alpha = 2.0
-        "sensitivity_alpha_20": {
-            "description": "AR-MPC (Alpha=2.0)",
-            "use_offline_gp": True,
-            "use_online_gp": True,
-            "gp_config": replace(base_gp_config, variance_scaling_alpha=2.0),
-            "solver_options": {"variance_scaling_alpha": 2.0},
+            "gp_config": ivs_single_gp,
+            "solver_options": {"variance_scaling_alpha": alpha},
         },
     }
 
 
-def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"):
+def _set_global_seed(seed: int, seed_cuda: bool = False) -> None:
+    np.random.seed(seed)
+    random.seed(seed)
+    if torch is not None:
+        torch.manual_seed(seed)
+        if seed_cuda and torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+
+def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random",
+                        seed=303, wind_profile="default"):
     """
     Run single ablation using the proven prepare_quadrotor_mpc and main functions.
     """
+    # Keep CPU-side determinism by default; avoid touching CUDA RNG unless needed.
+    _set_global_seed(int(seed), seed_cuda=False)
     simulation_options = SimpleSimConfig.simulation_disturbances
     
     # Configure Offline Model Loading
@@ -145,7 +202,9 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
             use_online_gp=config["use_online_gp"],
             use_offline_gp=config["use_offline_gp"], 
             online_gp_manager=online_gp_manager,
-            model_label=config.get("description", config_name)
+            model_label=config.get("description", config_name),
+            wind_profile=wind_profile,
+            trajectory_seed=int(seed),
         )
         
         # Parse results
@@ -222,7 +281,6 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     
     fig1_path = os.path.join(save_dir, 'ablation_rmse_comparison.pdf')
     fig1.savefig(fig1_path, dpi=300, bbox_inches='tight')
-    fig1.savefig(fig1_path.replace('.pdf', '.png'), dpi=300, bbox_inches='tight')
     print(f"Saved: {fig1_path}")
     plt.close(fig1)
     
@@ -260,7 +318,6 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
         
         fig1b_path = os.path.join(save_dir, 'ablation_rmse_zoomed.pdf')
         fig1b.savefig(fig1b_path, dpi=300, bbox_inches='tight')
-        fig1b.savefig(fig1b_path.replace('.pdf', '.png'), dpi=300, bbox_inches='tight')
         print(f"Saved: {fig1b_path}")
         plt.close(fig1b)
 
@@ -345,21 +402,26 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
             plt.close(fig3)
 
 
-def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize=True):
+def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize=True,
+                       wind_profile="default", seed_base=303, preset="baseline"):
     """Run complete ablation study."""
     print("=" * 70)
-    print("Ablation Study for Variance-Aware GP-MPC")
+    print("Focused Ablation: FIFO vs IVS (alpha=0)")
     print("=" * 70)
-    print(f"Speed: {speed} m/s, Trajectory: {trajectory_type}, Seeds: {n_seeds}\n")
+    print(
+        f"Speed: {speed} m/s, Trajectory: {trajectory_type}, "
+        f"Seeds: {n_seeds}, Wind: {wind_profile}, Preset: {preset}\n"
+    )
 
-    configs = get_ablation_configs()
+    configs = get_ablation_configs(preset=preset)
     results = {}
 
     # Define order of execution/plotting
     ordered_keys = [
-        "nominal", "sgp_mpc", "ar_mpc", 
-        "ar_mpc_fifo", "ar_mpc_no_var", 
-        "sensitivity_alpha_05", "sensitivity_alpha_20"
+        "ar_mpc_fifo",
+        "ar_mpc_ivs_singlelevel",
+        "ar_mpc_ivs",
+        "ar_mpc_ivs_novelty0",
     ]
     
     # Ensure all keys exist
@@ -368,18 +430,37 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
     for config_name in ordered_keys:
         config = configs[config_name]
         print(f"Running: {config['description']}...")
-        
-        result = run_single_ablation(
-            config_name, config, speed=speed, trajectory_type=trajectory_type
-        )
-        
-        if result:
+
+        seed_results = []
+        for seed_offset in range(max(1, int(n_seeds))):
+            seed = int(seed_base) + seed_offset
+            result = run_single_ablation(
+                config_name,
+                config,
+                speed=speed,
+                trajectory_type=trajectory_type,
+                seed=seed,
+                wind_profile=wind_profile,
+            )
+            if result is not None:
+                seed_results.append(result)
+
+        if seed_results:
+            rmse_values = [r["rmse"] for r in seed_results]
+            max_vel_values = [r["max_vel"] for r in seed_results]
+            rmse_mean = float(np.mean(rmse_values))
+            rmse_std = float(np.std(rmse_values))
+
             results[config_name] = {
-                "rmse": result["rmse"],
-                "max_vel": result["max_vel"],
+                "rmse": rmse_mean,
+                "rmse_std": rmse_std,
+                "max_vel": float(np.mean(max_vel_values)),
                 "description": config['description']
             }
-            print(f"  RMSE: {result['rmse']:.4f} m, Max Vel: {result['max_vel']:.2f} m/s")
+            print(
+                f"  RMSE(mean±std): {rmse_mean:.4f} ± {rmse_std:.4f} m, "
+                f"Max Vel(mean): {np.mean(max_vel_values):.2f} m/s"
+            )
         else:
             print(f"  Failed to run {config_name}")
 
@@ -388,12 +469,16 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
         print("\n" + "=" * 70)
         print("Summary Table")
         print("=" * 70)
-        print(f"{'Configuration':<25} {'RMSE (m)':<15} {'Max Vel (m/s)':<15}")
+        print(f"{'Configuration':<35} {'RMSE mean±std (m)':<24} {'Max Vel (m/s)':<15}")
         print("-" * 70)
         for config_name in ordered_keys:
             if config_name in results:
                 result = results[config_name]
-                print(f"{result['description']:<25} {result['rmse']:<15.4f} {result['max_vel']:<15.2f}")
+                print(
+                    f"{result['description']:<35} "
+                    f"{result['rmse']:.4f}±{result.get('rmse_std', 0.0):.4f}{'':<8} "
+                    f"{result['max_vel']:<15.2f}"
+                )
         
         # Visualize
         if visualize:
@@ -410,10 +495,13 @@ if __name__ == "__main__":
         pass
 
     import argparse
-    parser = argparse.ArgumentParser(description="Ablation study for variance-aware GP-MPC")
-    parser.add_argument("--speed", type=float, default=2.7, help="Average trajectory speed (m/s)")
+    parser = argparse.ArgumentParser(description="Ablation study for FIFO vs IVS (alpha=0)")
+    parser.add_argument("--speed", type=float, default=3.5, help="Average trajectory speed (m/s)")
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
-    parser.add_argument("--seeds", type=int, default=303, help="Number of Monte Carlo seeds")
+    parser.add_argument("--seeds", type=int, default=1, help="Number of Monte Carlo seeds")
+    parser.add_argument("--seed-base", type=int, default=303, help="Base random seed")
+    parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"])
+    parser.add_argument("--preset", type=str, default="contrast", choices=["baseline", "contrast"])
     parser.add_argument("--no-viz", action="store_true", help="Disable visualization")
     args = parser.parse_args()
 
@@ -421,5 +509,8 @@ if __name__ == "__main__":
         speed=args.speed, 
         trajectory_type=args.trajectory, 
         n_seeds=args.seeds,
-        visualize=not args.no_viz
+        visualize=not args.no_viz,
+        wind_profile=args.wind_profile,
+        seed_base=args.seed_base,
+        preset=args.preset,
     )
