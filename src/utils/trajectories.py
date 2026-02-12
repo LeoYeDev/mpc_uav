@@ -10,8 +10,16 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program. If not, see <http://www.gnu.org/licenses/>.
 """
+import os
 import matplotlib
-matplotlib.use('TkAgg')
+# Headless-safe backend selection.
+if os.environ.get('DISPLAY', '') == '':
+    matplotlib.use('Agg')
+else:
+    try:
+        matplotlib.use('TkAgg')
+    except ImportError:
+        matplotlib.use('Agg')
 
 import numpy as np
 from src.utils.utils import undo_quaternion_flip, rotation_matrix_to_quat
@@ -21,7 +29,6 @@ from src.utils.keyframe_3d_gen import random_periodical_trajectory
 from config.configuration_parameters import DirectoryConfig
 from src.core.dynamics import Quadrotor3D
 import matplotlib.pyplot as plt
-import os
 import yaml
 import json
 

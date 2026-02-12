@@ -39,6 +39,8 @@ class OnlineGPConfig:
         refit_hyperparams_interval: 重训练之间的更新次数间隔
         worker_train_iters: 每个工作任务的训练迭代次数
         worker_lr: 训练的学习率
+        gp_kernel: 在线GP核函数类型 ('rbf'/'matern12'/'matern32'/'matern52')
+        gp_matern_nu: 当 gp_kernel='matern_nu' 时使用的 nu 参数
         
         # Ablation switches (消融开关)
         buffer_type: 缓冲区类型 ('ivs' 信息值选择 / 'fifo' 先进先出)
@@ -62,6 +64,8 @@ class OnlineGPConfig:
     refit_hyperparams_interval: int = 10
     worker_train_iters: int = 20
     worker_lr: float = 0.045
+    gp_kernel: str = 'rbf'
+    gp_matern_nu: float = 2.5
     
     # Ablation switches (消融实验开关)
     buffer_type: str = 'ivs'           # 'ivs' (Information Value Selection) or 'fifo'
@@ -91,6 +95,8 @@ class OnlineGPConfig:
             'refit_hyperparams_interval': self.refit_hyperparams_interval,
             'worker_train_iters': self.worker_train_iters,
             'worker_lr': self.worker_lr,
+            'gp_kernel': self.gp_kernel,
+            'gp_matern_nu': self.gp_matern_nu,
             # Ablation switches
             'buffer_type': self.buffer_type,
             'async_hp_updates': self.async_hp_updates,

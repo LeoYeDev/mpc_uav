@@ -41,15 +41,30 @@ class ExactGPModel(gpytorch.models.ExactGP):
     A standard Exact GP model, using an RBF kernel (Squared Exponential) to match
     the CasADi implementation in base.py.
     """
-    def __init__(self, train_x, train_y, likelihood, ard_num_dims=1):
+    def __init__(self, train_x, train_y, likelihood, ard_num_dims=1,
+                 kernel_type: str = "rbf", matern_nu: float = 2.5):
         # 初始化父类
         super().__init__(train_x, train_y, likelihood)
         # 定义均值函数为常量
         self.mean_module = gpytorch.means.ConstantMean()
+        kernel_name = str(kernel_type).lower().strip()
+
+        if kernel_name in ("rbf", "se", "squared_exponential"):
+            base_kernel = gpytorch.kernels.RBFKernel(ard_num_dims=ard_num_dims)
+        elif kernel_name in ("matern12", "matern_12"):
+            base_kernel = gpytorch.kernels.MaternKernel(nu=0.5, ard_num_dims=ard_num_dims)
+        elif kernel_name in ("matern32", "matern_32"):
+            base_kernel = gpytorch.kernels.MaternKernel(nu=1.5, ard_num_dims=ard_num_dims)
+        elif kernel_name in ("matern52", "matern_52", "matern"):
+            base_kernel = gpytorch.kernels.MaternKernel(nu=2.5, ard_num_dims=ard_num_dims)
+        elif kernel_name in ("matern_nu", "matern_custom"):
+            base_kernel = gpytorch.kernels.MaternKernel(nu=float(matern_nu), ard_num_dims=ard_num_dims)
+        else:
+            print(f"[ExactGPModel] Unknown kernel '{kernel_type}', fallback to RBF.")
+            base_kernel = gpytorch.kernels.RBFKernel(ard_num_dims=ard_num_dims)
+
         # 定义协方差函数（核函数）
-        self.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(ard_num_dims=ard_num_dims)
-        )
+        self.covar_module = gpytorch.kernels.ScaleKernel(base_kernel)
     
     # 定义模型的前向传播
     def forward(self, x):
@@ -103,12 +118,19 @@ def gp_training_worker(
     """
     device_str = worker_config.get('device_str', 'cpu')
     device = torch.device(device_str)
+    kernel_type = worker_config.get('kernel_type', 'rbf')
+    matern_nu = float(worker_config.get('matern_nu', 2.5))
     
     # 初始化一个仅属于此进程的模型、似然和边际对数似然(mll)
     likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
     dummy_x = torch.zeros(2, 1, device=device)
     dummy_y = torch.zeros(2, device=device)
-    model = ExactGPModel(dummy_x, dummy_y, likelihood, ard_num_dims=1).to(device)
+    model = ExactGPModel(
+        dummy_x, dummy_y, likelihood,
+        ard_num_dims=1,
+        kernel_type=kernel_type,
+        matern_nu=matern_nu
+    ).to(device)
     mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
 
     while not stop_event.is_set():
@@ -178,6 +200,8 @@ class IncrementalGP:
         self.config = config
         self.device = torch.device(config.get('main_process_device', 'cpu'))
         self.epsilon = 1e-7
+        self.kernel_type = str(config.get('gp_kernel', 'rbf'))
+        self.matern_nu = float(config.get('gp_matern_nu', 2.5))
         
         # 数据缓冲区 - 根据config选择缓冲区类型
         max_size = config.get('buffer_max_size', 30)
@@ -231,7 +255,12 @@ class IncrementalGP:
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(self.device)
         dummy_x = torch.zeros(2, 1, device=self.device)
         dummy_y = torch.zeros(2, device=self.device)
-        self.model = ExactGPModel(dummy_x, dummy_y, self.likelihood, ard_num_dims=1).to(self.device)
+        self.model = ExactGPModel(
+            dummy_x, dummy_y, self.likelihood,
+            ard_num_dims=1,
+            kernel_type=self.kernel_type,
+            matern_nu=self.matern_nu
+        ).to(self.device)
         
         # 状态标志
         self.updates_since_last_train = 0  # 距离上次训练有多少次数据更新
@@ -341,7 +370,14 @@ class IncrementalGP:
 
         # 4. 重新初始化模型和似然
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(self.device)
-        self.model = ExactGPModel(None, None, self.likelihood).to(self.device)
+        dummy_x = torch.zeros(2, 1, device=self.device)
+        dummy_y = torch.zeros(2, device=self.device)
+        self.model = ExactGPModel(
+            dummy_x, dummy_y, self.likelihood,
+            ard_num_dims=1,
+            kernel_type=self.kernel_type,
+            matern_nu=self.matern_nu
+        ).to(self.device)
         
 
 
@@ -358,6 +394,7 @@ class IncrementalGPManager:
         self.config = config
         self.num_dimensions = config.get('num_dimensions', 3)
         self.buffer_max_size = int(config.get('buffer_max_size', 30))
+        self.async_hp_updates = bool(config.get('async_hp_updates', True))
         self.min_points_for_initial_train = int(config.get('min_points_for_initial_train', 50))
         if self.min_points_for_initial_train > self.buffer_max_size:
             # Avoid a dead zone where online GP can never trigger initial training.
@@ -368,29 +405,59 @@ class IncrementalGPManager:
             )
         self.gps = [IncrementalGP(i, config) for i in range(self.num_dimensions)]
         self._is_shutdown = False
-        
-        # 为每个worker创建一个专属的任务队列
-        self.task_queues = [Queue() for _ in range(self.num_dimensions)]
-        # 所有worker共享一个公共的结果队列
-        self.result_queue = Queue()
-        # 用于通知所有worker停止的事件
-        self.stop_event = Event()
+
+        # 当 async_hp_updates=False 时，采用主进程同步训练，避免多进程依赖。
+        self.task_queues = []
+        self.result_queue = None
+        self.stop_event = None
         self.workers = []
-        
+
         # 新增: 用于存储后台训练耗时的列表
         self.training_durations = []
-        
-        # 启动后台工作进程（静默）
-        for i in range(self.num_dimensions):
-            worker_config = {
-                'n_iter': config.get('worker_train_iters', 150),
-                'lr': config.get('worker_lr', 0.01),
-                'device_str': config.get('worker_device_str', 'cpu'),
-            }
-            worker = Process(target=gp_training_worker, args=(self.task_queues[i], self.result_queue, self.stop_event, worker_config, i))
-            worker.daemon = True
-            worker.start()
-            self.workers.append(worker)
+
+        if self.async_hp_updates:
+            try:
+                # 为每个worker创建一个专属的任务队列
+                self.task_queues = [Queue() for _ in range(self.num_dimensions)]
+                # 所有worker共享一个公共的结果队列
+                self.result_queue = Queue()
+                # 用于通知所有worker停止的事件
+                self.stop_event = Event()
+
+                # 启动后台工作进程（静默）
+                for i in range(self.num_dimensions):
+                    worker_config = {
+                        'n_iter': config.get('worker_train_iters', 150),
+                        'lr': config.get('worker_lr', 0.01),
+                        'device_str': config.get('worker_device_str', 'cpu'),
+                        'kernel_type': config.get('gp_kernel', 'rbf'),
+                        'matern_nu': config.get('gp_matern_nu', 2.5),
+                    }
+                    worker = Process(
+                        target=gp_training_worker,
+                        args=(self.task_queues[i], self.result_queue, self.stop_event, worker_config, i)
+                    )
+                    worker.daemon = True
+                    worker.start()
+                    self.workers.append(worker)
+            except Exception as e:
+                # 某些运行环境（例如受限容器）不允许创建进程信号量；自动回退到同步训练。
+                print(
+                    f"[GPManager] Async workers unavailable ({e}); "
+                    "fallback to synchronous hyperparameter updates."
+                )
+                for worker in self.workers:
+                    try:
+                        if worker.is_alive():
+                            worker.terminate()
+                        worker.join(timeout=1.0)
+                    except Exception:
+                        pass
+                self.workers = []
+                self.task_queues = []
+                self.result_queue = None
+                self.stop_event = None
+                self.async_hp_updates = False
         
         # 注册自动清理
         atexit.register(self.shutdown)
@@ -402,6 +469,33 @@ class IncrementalGPManager:
             except ValueError:
                 # 当不在主线程运行时，无法设置信号处理程序
                 pass
+
+    def _train_gp_blocking(self, gp: IncrementalGP, train_x, train_y) -> Tuple[TrainingHistory, float]:
+        """
+        在主进程内同步训练一个维度的GP（用于 async_hp_updates=False）。
+        """
+        gp.model.set_train_data(inputs=train_x, targets=train_y, strict=False)
+        gp.model.train()
+        gp.likelihood.train()
+
+        optimizer = torch.optim.Adam(gp.model.parameters(), lr=self.config.get('worker_lr', 0.01))
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(gp.likelihood, gp.model)
+        history = TrainingHistory()
+
+        n_iter = max(1, int(self.config.get('worker_train_iters', 100)))
+        start_time = time.time()
+        for _ in range(n_iter):
+            optimizer.zero_grad()
+            output = gp.model(train_x)
+            loss = -mll(output, train_y)
+            loss.backward()
+            optimizer.step()
+            history.record(loss.item(), gp.model, optimizer)
+
+        duration = time.time() - start_time
+        gp.model.eval()
+        gp.likelihood.eval()
+        return history, duration
 
     def _signal_handler(self, signum, frame):
         print(f"\n[管理器] 捕获信号 {signum}，正在强制关闭...")
@@ -443,13 +537,29 @@ class IncrementalGPManager:
             if should_trigger:
                 train_x, train_y = gp.get_and_normalize_data()
                 if train_x is not None:
-                    current_state = gp.get_current_state_for_worker()
-                    task = (train_x, train_y, current_state)
-                    self.task_queues[i].put(task)
-                    gp.is_training_in_progress = True
+                    if self.async_hp_updates:
+                        current_state = gp.get_current_state_for_worker()
+                        task = (train_x, train_y, current_state)
+                        self.task_queues[i].put(task)
+                        gp.is_training_in_progress = True
+                    else:
+                        gp.is_training_in_progress = True
+                        try:
+                            history, duration = self._train_gp_blocking(gp, train_x, train_y)
+                            self.training_durations.append(duration)
+                            gp.last_training_history = history
+                            gp.updates_since_last_train = 0
+                            gp.is_trained_once = True
+                        except Exception as e:
+                            print(f"[GPManager] Synchronous training failed on dim {i}: {e}")
+                            traceback.print_exc()
+                        finally:
+                            gp.is_training_in_progress = False
 
     def poll_for_results(self):
         """非阻塞地检查并应用已完成的训练结果。"""
+        if not self.async_hp_updates or self.result_queue is None:
+            return
         try:
             dim_idx, new_state_dict, history, duration = self.result_queue.get_nowait()
             # 新增: 记录训练时长
@@ -463,16 +573,26 @@ class IncrementalGPManager:
         if self._is_shutdown:
             return
         self._is_shutdown = True
+        if not self.async_hp_updates:
+            return
+
         print("\n gracefully shutting down all background worker processes...")
-        self.stop_event.set()
+        if self.stop_event is not None:
+            self.stop_event.set()
         for q in self.task_queues:
-            q.put(None)
-            
+            try:
+                q.put(None)
+            except Exception:
+                pass
+
         time.sleep(0.5)
-        for i, worker in enumerate(self.workers):
-            worker.join(timeout=2.0)
-            if worker.is_alive():
-                worker.terminate()
+        for worker in self.workers:
+            try:
+                worker.join(timeout=2.0)
+                if worker.is_alive():
+                    worker.terminate()
+            except Exception:
+                pass
         # 静默关闭
     
     def _clear_queue(self, q):
@@ -494,9 +614,11 @@ class IncrementalGPManager:
            gp.is_trained_once = False
            
        # 清空所有任务队列和结果队列
-       for q in self.task_queues:
-           self._clear_queue(q)
-       self._clear_queue(self.result_queue)
+       if self.async_hp_updates:
+           for q in self.task_queues:
+               self._clear_queue(q)
+           if self.result_queue is not None:
+               self._clear_queue(self.result_queue)
        
        # 重置性能统计列表
        self.training_durations = [] 

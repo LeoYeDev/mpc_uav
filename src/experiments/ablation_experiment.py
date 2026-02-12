@@ -11,6 +11,7 @@ import numpy as np
 import multiprocessing
 import os
 import random
+import re
 import matplotlib.pyplot as plt
 from dataclasses import replace
 
@@ -171,8 +172,13 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
     name = DEFAULT_MODEL_NAME if config["use_offline_gp"] else None
     reg_type = "gp" if config["use_offline_gp"] else None
     
-    # Use unique quad_name to avoid ACADOS solver cache conflicts
-    quad_name = f"my_quad_abl_{config_name}"
+    # Use unique quad_name to avoid ACADOS solver cache conflicts.
+    # CasADi function names only allow [A-Za-z0-9_] and cannot start with digits.
+    safe_name = re.sub(r'[^A-Za-z0-9_]+', '_', str(config_name))
+    safe_name = re.sub(r'_+', '_', safe_name).strip('_')
+    if not safe_name or safe_name[0].isdigit():
+        safe_name = f"cfg_{safe_name}"
+    quad_name = f"my_quad_abl_{safe_name}"
     
     # Prepare MPC Controller
     quad_mpc = prepare_quadrotor_mpc(
@@ -207,14 +213,22 @@ def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random"
             trajectory_seed=int(seed),
         )
         
-        # Parse results
-        rmse, max_vel, mean_opt_time, _, _, _ = result
+        # Parse results (backward-compatible with extended latency outputs).
+        rmse, max_vel, mean_opt_time, _, _, _, *extras = result
+        gp_update_time = float(extras[0]) if len(extras) >= 1 else 0.0
+        control_time = float(extras[1]) if len(extras) >= 2 else float(mean_opt_time)
         
         # Cleanup
         if online_gp_manager:
             online_gp_manager.shutdown()
         
-        return {"rmse": rmse, "max_vel": max_vel, "opt_time": mean_opt_time}
+        return {
+            "rmse": rmse,
+            "max_vel": max_vel,
+            "opt_time": mean_opt_time,            # Solve-only latency
+            "gp_update_time": gp_update_time,     # Online update/poll overhead
+            "control_time": control_time,         # Solve + online overhead
+        }
     
     except Exception as e:
         print(f"  Error in {config_name}: {e}")

@@ -175,8 +175,11 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     # Sliding reference trajectory initial index
     current_idx = 0
 
-    # Measure the MPC optimization time
-    mean_opt_time = 0.0
+    # Latency accounting:
+    # 1) MPC optimize solve time only
+    # 2) Online GP update/poll overhead
+    mpc_opt_time_acc = 0.0
+    gp_update_time_acc = 0.0
 
     # Measure total simulation time
     total_sim_time = 0.0
@@ -233,7 +236,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         w_opt, x_pred = quad_mpc.optimize(use_model=model_ind, return_x=True, 
                                           online_gp_predictions=online_predictions,
                                           online_gp_variances=online_variances)
-        mean_opt_time += time.time() - t_opt_init
+        mpc_opt_time_acc += time.time() - t_opt_init
 
         # Select first input (one for each motor) - MPC applies only first optimized input to the plant
         ref_u = np.squeeze(np.array(w_opt[:4]))
@@ -298,7 +301,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
             online_gp_manager.update(v_body_in, residual_acc_body, timestamp=total_sim_time)
             online_gp_manager.poll_for_results()
 
-            mean_opt_time += time.time() - update_start_time
+            gp_update_time_acc += time.time() - update_start_time
             #print(f"在线GP更新耗时: {time.time() - update_start_time:.4f}s")
 
             # --- 在初始优化后可视化GP拟合情况 (一次) ---
@@ -319,8 +322,10 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     quad_trajectory[-1, :] = np.expand_dims(quad_current_state, axis=0)
     u_optimized_seq[-1, :] = np.reshape(ref_u, (1, -1))
     
-    # Average elapsed time per optimization
-    mean_opt_time /= current_idx
+    # Average elapsed time per control step
+    mean_opt_time = mpc_opt_time_acc / max(current_idx, 1)
+    mean_gp_update_time = gp_update_time_acc / max(current_idx, 1)
+    mean_total_ctrl_time = mean_opt_time + mean_gp_update_time
 
     rmse = interpol_mse(reference_timestamps, reference_traj[:, :3], reference_timestamps, quad_trajectory[:, :3])
     max_vel = np.max(np.sqrt(np.sum(reference_traj[:, 7:10] ** 2, 1)))
@@ -329,7 +334,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     title = rf'${model_label}: \, v_{{\mathrm{{max}}}} = {max_vel:.2f} \, \mathrm{{m/s}}, \, RMSE = {rmse:.3f} \, \mathrm{{m}}$'
     
     print(f'\n--- Simulation finished ---\n')
-    print(f'Average optimization time: {mean_opt_time:.4f} s')
+    print(f'Average optimization time (solve only): {mean_opt_time:.4f} s')
+    print(f'Average online update overhead: {mean_gp_update_time:.4f} s')
+    print(f'Average control compute time (solve + online): {mean_total_ctrl_time:.4f} s')
     print(f'RMSE: {rmse:.4f} m')
     print(f'Maximum velocity: {max_vel:.2f} m/s')
 
@@ -392,7 +399,16 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
             plt.close()
     # --- 在线GP绘图结束 ---
     # --- 修改 1: 增加函数返回值，用于后续保存 ---
-    return rmse, max_vel, mean_opt_time, reference_timestamps, reference_traj, quad_trajectory
+    return (
+        rmse,
+        max_vel,
+        mean_opt_time,
+        reference_timestamps,
+        reference_traj,
+        quad_trajectory,
+        mean_gp_update_time,
+        mean_total_ctrl_time,
+    )
     # --- 修改结束 ---
 
 
@@ -479,13 +495,23 @@ if __name__ == '__main__':
                 if online_gp_manager:
                     online_gp_manager.reset()
                 # --- 修改结束 --
-                (mse[traj_id, v_id, n_train_id], traj_v, opt_dt,
-                 t_ref, x_ref, x_executed) = main(custom_mpc, 
-                                                  **traj_params, 
-                                                  use_online_gp=use_online_gp,
-                                                  use_offline_gp=use_offline_gp, 
-                                                  model_label=model_desc,
-                                                  online_gp_manager=online_gp_manager)
+                run_result = main(
+                    custom_mpc,
+                    **traj_params,
+                    use_online_gp=use_online_gp,
+                    use_offline_gp=use_offline_gp,
+                    model_label=model_desc,
+                    online_gp_manager=online_gp_manager,
+                )
+                (
+                    mse[traj_id, v_id, n_train_id],
+                    traj_v,
+                    opt_dt,
+                    t_ref,
+                    x_ref,
+                    x_executed,
+                    *_
+                ) = run_result
                 
                 t_opt[traj_id, v_id, n_train_id] += opt_dt
                 if v_max[traj_id, v_id] == 0:
