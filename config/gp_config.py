@@ -41,6 +41,11 @@ class OnlineGPConfig:
         worker_lr: 训练的学习率
         gp_kernel: 在线GP核函数类型 ('rbf'/'matern12'/'matern32'/'matern52')
         gp_matern_nu: 当 gp_kernel='matern_nu' 时使用的 nu 参数
+        cluster_anchor_window: 主簇锚点窗口（最近样本数）
+        cluster_gap_factor: 速度轴切簇间隙倍率
+        out_cluster_penalty: 非主簇评分惩罚系数
+        target_size_slack: 训练集下界松弛，最终大小范围 N-slack..N
+        buffer_local_dup_cap: 同一速度邻域允许的最大局部样本数
         
         # Ablation switches (消融开关)
         buffer_type: 缓冲区类型 ('ivs' 信息值选择 / 'fifo' 先进先出)
@@ -51,14 +56,19 @@ class OnlineGPConfig:
     main_process_device: str = 'cpu'
     worker_device_str: str = 'cpu'
     buffer_max_size: int = 20
-    novelty_weight: float = 0.35
-    recency_weight: float = 0.65
+    novelty_weight: float = 0.3
+    recency_weight: float = 0.7
     recency_decay_rate: float = 0.1
-    buffer_min_distance: float = 0.01
+    buffer_min_distance: float = 0.1
     ivs_multilevel: bool = True
-    buffer_level_capacities: List[int] = field(default_factory=lambda: [14, 4, 2])
-    buffer_level_sparsity: List[int] = field(default_factory=lambda: [1, 4, 8])
-    buffer_merge_min_distance: float = 0.01
+    buffer_level_capacities: List[int] = field(default_factory=lambda: [13, 5, 2])
+    buffer_level_sparsity: List[int] = field(default_factory=lambda: [1, 2, 5])
+    buffer_merge_min_distance: float = 0.01  # deprecated for compatibility
+    cluster_anchor_window: int = 6
+    cluster_gap_factor: float = 2.5
+    out_cluster_penalty: float = 0.20
+    target_size_slack: int = 1
+    buffer_local_dup_cap: int = 4
     error_threshold: float = 0.15
     min_points_for_initial_train: int = 15
     refit_hyperparams_interval: int = 10
@@ -90,6 +100,11 @@ class OnlineGPConfig:
             'buffer_level_capacities': self.buffer_level_capacities,
             'buffer_level_sparsity': self.buffer_level_sparsity,
             'buffer_merge_min_distance': self.buffer_merge_min_distance,
+            'cluster_anchor_window': self.cluster_anchor_window,
+            'cluster_gap_factor': self.cluster_gap_factor,
+            'out_cluster_penalty': self.out_cluster_penalty,
+            'target_size_slack': self.target_size_slack,
+            'buffer_local_dup_cap': self.buffer_local_dup_cap,
             'error_threshold': self.error_threshold,
             'min_points_for_initial_train': self.min_points_for_initial_train,
             'refit_hyperparams_interval': self.refit_hyperparams_interval,
