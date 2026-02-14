@@ -142,11 +142,15 @@ def _capture_buffer_snapshot(manager: IncrementalGPManager, step: int, sim_time:
                 "levels": levels,
                 "trained": bool(gp.is_trained_once),
                 "training_in_progress": bool(gp.is_training_in_progress),
-                "main_cluster_ratio": float(diagnostics.get("main_cluster_ratio", np.nan)),
                 "selected_size": int(diagnostics.get("selected_size", len(merged))),
                 "unique_ratio": float(diagnostics.get("unique_ratio", np.nan)),
                 "duplicate_ratio": float(diagnostics.get("duplicate_ratio", np.nan)),
-                "coverage_bins_used": float(diagnostics.get("coverage_bins_used", np.nan)),
+                "insert_accept_ratio": float(diagnostics.get("insert_accept_ratio", np.nan)),
+                "insert_skip_ratio": float(diagnostics.get("insert_skip_ratio", np.nan)),
+                "prune_old_count": float(diagnostics.get("prune_old_count", np.nan)),
+                "flip_delete_count": float(diagnostics.get("flip_delete_count", np.nan)),
+                "prune_old_count_last": float(diagnostics.get("prune_old_count_last", np.nan)),
+                "flip_delete_count_last": float(diagnostics.get("flip_delete_count_last", np.nan)),
             }
         )
     return {"step": int(step), "time": float(sim_time), "dims": dims}
@@ -482,10 +486,14 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
         "dim",
         "merged_count",
         "selected_size",
-        "main_cluster_ratio",
         "unique_ratio",
         "duplicate_ratio",
-        "coverage_bins_used",
+        "insert_accept_ratio",
+        "insert_skip_ratio",
+        "prune_old_count",
+        "flip_delete_count",
+        "prune_old_count_last",
+        "flip_delete_count_last",
         "trained",
         "training_in_progress",
     ] + level_cols
@@ -502,11 +510,6 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
                     "dim": DIM_LABELS[d],
                     "merged_count": len(dim_snap["merged"]),
                     "selected_size": int(dim_snap.get("selected_size", len(dim_snap["merged"]))),
-                    "main_cluster_ratio": (
-                        f"{float(dim_snap.get('main_cluster_ratio', np.nan)):.6f}"
-                        if np.isfinite(float(dim_snap.get("main_cluster_ratio", np.nan)))
-                        else ""
-                    ),
                     "unique_ratio": (
                         f"{float(dim_snap.get('unique_ratio', np.nan)):.6f}"
                         if np.isfinite(float(dim_snap.get("unique_ratio", np.nan)))
@@ -517,9 +520,34 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
                         if np.isfinite(float(dim_snap.get("duplicate_ratio", np.nan)))
                         else ""
                     ),
-                    "coverage_bins_used": (
-                        f"{float(dim_snap.get('coverage_bins_used', np.nan)):.6f}"
-                        if np.isfinite(float(dim_snap.get("coverage_bins_used", np.nan)))
+                    "insert_accept_ratio": (
+                        f"{float(dim_snap.get('insert_accept_ratio', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("insert_accept_ratio", np.nan)))
+                        else ""
+                    ),
+                    "insert_skip_ratio": (
+                        f"{float(dim_snap.get('insert_skip_ratio', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("insert_skip_ratio", np.nan)))
+                        else ""
+                    ),
+                    "prune_old_count": (
+                        f"{float(dim_snap.get('prune_old_count', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("prune_old_count", np.nan)))
+                        else ""
+                    ),
+                    "flip_delete_count": (
+                        f"{float(dim_snap.get('flip_delete_count', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("flip_delete_count", np.nan)))
+                        else ""
+                    ),
+                    "prune_old_count_last": (
+                        f"{float(dim_snap.get('prune_old_count_last', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("prune_old_count_last", np.nan)))
+                        else ""
+                    ),
+                    "flip_delete_count_last": (
+                        f"{float(dim_snap.get('flip_delete_count_last', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("flip_delete_count_last", np.nan)))
                         else ""
                     ),
                     "trained": int(dim_snap["trained"]),

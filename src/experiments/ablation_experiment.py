@@ -63,7 +63,6 @@ def get_ablation_configs(preset="baseline"):
             min_points_for_initial_train=8,  # must stay <= buffer size
             refit_hyperparams_interval=12,
             worker_train_iters=12,
-            recency_decay_rate=0.10,
         )
         fifo_gp = replace(
             base_gp_config,
@@ -75,15 +74,9 @@ def get_ablation_configs(preset="baseline"):
             base_gp_config,
             buffer_type='ivs',
             variance_scaling_alpha=alpha,
-            novelty_weight=0.45,
-            recency_weight=0.55,
-            buffer_min_distance=0.02,
-            buffer_level_capacities=[7, 3, 2],
-            buffer_level_sparsity=[1, 2, 5],
-            buffer_local_dup_cap=3,
-            buffer_close_update_v_ratio=0.25,
-            buffer_close_update_y_threshold=0.025,
-            out_cluster_penalty=0.08,
+            buffer_insert_min_delta_v=0.15,
+            buffer_prune_old_delta_v=0.15,
+            buffer_flip_prune_limit=3,
             **common,
         )
     else:

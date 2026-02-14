@@ -1,18 +1,17 @@
 """
-Sensitivity Experiment for AR-MPC (online GP components).
+Sensitivity Experiment for AR-MPC (online GP buffer simplification version).
 
 This script is separated from ablation_experiment.py and focuses on:
-1) OAT (one-at-a-time) sensitivity under a fixed baseline.
-2) Joint-parameter sweep (Sobol if available) for interaction effects.
-3) Performance-latency trade-off figures for publication.
+1) OAT sensitivity around simplified IVS buffer parameters.
+2) Joint Sobol/random sweep for interaction effects.
+3) Publication-ready performance-latency trade-off figures.
 
-Typical usage:
-1) Minimal smoke check:
-   python src/experiments/sensitivity_experiment.py --mode smoke --max-runs 2 --no-plots
-2) Quick sweep:
-   python src/experiments/sensitivity_experiment.py --mode quick --studies novelty_decay,levels,distance,kernel
-3) Full sweep for paper:
-   python src/experiments/sensitivity_experiment.py --mode full --studies novelty_decay,levels,distance,kernel,sobol --seeds 5 --wind-profile regime_shift --speed 3.0
+Current sensitivity dimensions:
+- buffer_insert_min_delta_v
+- buffer_prune_old_delta_v
+- buffer_flip_prune_limit
+- buffer_max_size
+- gp_kernel
 """
 
 import argparse
@@ -28,7 +27,7 @@ import matplotlib.pyplot as plt
 
 try:
     import torch
-except Exception:  # pragma: no cover - optional runtime dependency
+except Exception:  # pragma: no cover
     torch = None
 
 from config.gp_config import OnlineGPConfig, build_online_gp_config
@@ -36,92 +35,36 @@ from src.experiments.ablation_experiment import run_single_ablation
 from src.visualization.style import set_publication_style, SCI_COLORS
 
 
-def _allocate_level_capacities(total_size: int) -> List[int]:
-    """Allocate 3-level capacities summing to total_size."""
-    total_size = int(max(3, total_size))
-    c0 = max(2, int(round(total_size * 0.55)))
-    c1 = max(1, int(round(total_size * 0.30)))
-    c2 = max(1, total_size - c0 - c1)
-
-    while c0 + c1 + c2 > total_size:
-        if c0 >= c1 and c0 >= c2 and c0 > 1:
-            c0 -= 1
-        elif c1 >= c2 and c1 > 1:
-            c1 -= 1
-        elif c2 > 1:
-            c2 -= 1
-        else:
-            break
-    while c0 + c1 + c2 < total_size:
-        c0 += 1
-    return [c0, c1, c2]
-
-
-def _scale_capacities(template_caps: List[int], total_size: int) -> List[int]:
-    """Scale template capacities to a new total size while keeping proportions."""
-    total_size = int(max(3, total_size))
-    if not template_caps:
-        return _allocate_level_capacities(total_size)
-    ratios = np.asarray(template_caps, dtype=float)
-    ratios = ratios / np.sum(ratios)
-    caps = np.maximum(1, np.round(ratios * total_size).astype(int))
-    while int(np.sum(caps)) > total_size:
-        idx = int(np.argmax(caps))
-        if caps[idx] > 1:
-            caps[idx] -= 1
-        else:
-            break
-    while int(np.sum(caps)) < total_size:
-        caps[0] += 1
-    return caps.tolist()
-
-
 def _study_values(mode: str) -> Dict[str, Dict]:
+    """Return study grids by run mode."""
     if mode == "full":
-        novelty_grid = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85]
-        decay_grid = [0.03, 0.05, 0.07, 0.09, 0.12, 0.15, 0.19, 0.24, 0.30]
-        levels_profiles = [
-            {"name": "recent_heavy", "caps": [10, 3, 1], "sparsity": [1, 3, 6]},
-            {"name": "balanced", "caps": [8, 4, 2], "sparsity": [1, 3, 6]},
-            {"name": "long_memory", "caps": [6, 4, 4], "sparsity": [1, 2, 4]},
-            {"name": "very_sparse_long", "caps": [7, 4, 3], "sparsity": [1, 4, 8]},
-            {"name": "dense_three_level", "caps": [8, 4, 2], "sparsity": [1, 2, 3]},
-            {"name": "coarse_three_level", "caps": [8, 4, 2], "sparsity": [1, 5, 10]},
-            {"name": "mid_heavy", "caps": [7, 5, 2], "sparsity": [1, 2, 6]},
-            {"name": "tail_heavy", "caps": [5, 4, 5], "sparsity": [1, 2, 5]},
-        ]
-        distance_vals = [0.006, 0.008, 0.010, 0.013, 0.016, 0.020, 0.024, 0.029, 0.034, 0.040]
-        local_dup_caps = [2, 3, 4, 5, 6, 8]
-        kernel_specs = [
-            {"kernel": "rbf", "nu": 2.5},
-            {"kernel": "matern12", "nu": 0.5},
-            {"kernel": "matern32", "nu": 1.5},
-            {"kernel": "matern52", "nu": 2.5},
-            {"kernel": "matern_nu", "nu": 1.8},
-        ]
         return {
-            "novelty_decay": {"novelty": novelty_grid, "decay": decay_grid},
-            "levels": {"profiles": levels_profiles},
-            "distance": {"min_distance": distance_vals, "local_dup_cap": local_dup_caps},
-            "kernel": {"kernels": kernel_specs},
-            "sobol": {"n_points": 128},
+            "thresholds": {
+                "insert": [0.08, 0.10, 0.12, 0.14, 0.15, 0.17, 0.20, 0.23],
+                "prune": [0.08, 0.10, 0.12, 0.14, 0.15, 0.17, 0.20, 0.23],
+            },
+            "flip_limit": {"values": [0, 1, 2, 3, 4, 5]},
+            "buffer_size": {"values": [8, 10, 12, 13, 16, 20, 24]},
+            "kernel": {
+                "kernels": [
+                    {"kernel": "rbf", "nu": 2.5},
+                    {"kernel": "matern12", "nu": 0.5},
+                    {"kernel": "matern32", "nu": 1.5},
+                    {"kernel": "matern52", "nu": 2.5},
+                    {"kernel": "matern_nu", "nu": 1.8},
+                ]
+            },
+            "sobol": {"n_points": 96},
         }
 
     if mode == "quick":
         return {
-            "novelty_decay": {
-                "novelty": [0.10, 0.25, 0.40, 0.55, 0.70],
-                "decay": [0.05, 0.09, 0.13, 0.18, 0.25],
+            "thresholds": {
+                "insert": [0.10, 0.13, 0.15, 0.18, 0.22],
+                "prune": [0.10, 0.13, 0.15, 0.18, 0.22],
             },
-            "levels": {
-                "profiles": [
-                    {"name": "recent_heavy", "caps": [9, 3, 2], "sparsity": [1, 3, 6]},
-                    {"name": "balanced", "caps": [8, 4, 2], "sparsity": [1, 3, 6]},
-                    {"name": "long_memory", "caps": [6, 4, 4], "sparsity": [1, 2, 4]},
-                    {"name": "very_sparse_long", "caps": [7, 4, 3], "sparsity": [1, 4, 8]},
-                ]
-            },
-            "distance": {"min_distance": [0.008, 0.012, 0.016, 0.022, 0.030], "local_dup_cap": [2, 4, 6]},
+            "flip_limit": {"values": [1, 2, 3, 4]},
+            "buffer_size": {"values": [10, 13, 16, 20]},
             "kernel": {
                 "kernels": [
                     {"kernel": "rbf", "nu": 2.5},
@@ -130,19 +73,17 @@ def _study_values(mode: str) -> Dict[str, Dict]:
                     {"kernel": "matern_nu", "nu": 1.8},
                 ]
             },
-            "sobol": {"n_points": 32},
+            "sobol": {"n_points": 24},
         }
 
     # smoke
     return {
-        "novelty_decay": {"novelty": [0.25, 0.55], "decay": [0.08, 0.16]},
-        "levels": {
-            "profiles": [
-                {"name": "balanced", "caps": [8, 4, 2], "sparsity": [1, 3, 6]},
-                {"name": "long_memory", "caps": [6, 4, 4], "sparsity": [1, 2, 4]},
-            ]
+        "thresholds": {
+            "insert": [0.12, 0.18],
+            "prune": [0.12, 0.18],
         },
-        "distance": {"min_distance": [0.01, 0.025], "local_dup_cap": [2, 4]},
+        "flip_limit": {"values": [1, 3]},
+        "buffer_size": {"values": [10, 13]},
         "kernel": {
             "kernels": [
                 {"kernel": "rbf", "nu": 2.5},
@@ -170,9 +111,7 @@ def _consume_budget(budget: Dict[str, Optional[int]]) -> bool:
 
 
 def _resolve_gp_devices(gp_device: str) -> Tuple[str, str]:
-    """
-    Resolve (main_process_device, worker_device_str).
-    """
+    """Resolve (main_process_device, worker_device_str)."""
     device_req = str(gp_device).strip().lower()
     if device_req == "cpu":
         return "cpu", "cpu"
@@ -188,30 +127,25 @@ def _resolve_gp_devices(gp_device: str) -> Tuple[str, str]:
 
 
 def _base_ivs_config(
-    buffer_size: int = 14,
-    train_mode: str = "sync",
-    gp_device: str = "auto",
+    buffer_size: int = 13,
+    train_mode: str = "async",
+    gp_device: str = "cpu",
 ) -> OnlineGPConfig:
-    """
-    Shared baseline config for sensitivity runs.
-    OAT studies vary one factor around this baseline.
-    """
+    """Shared baseline config for sensitivity runs."""
     buffer_size = int(buffer_size)
     min_points = min(buffer_size, max(6, int(round(buffer_size * 0.70))))
-    refit_interval = max(4, int(round(buffer_size * 0.40)))
-    use_async = train_mode == "async"
+    refit_interval = max(4, int(round(buffer_size * 0.45)))
+    use_async = str(train_mode).lower() == "async"
     main_dev, worker_dev = _resolve_gp_devices(gp_device)
     return build_online_gp_config(
-        buffer_type='ivs',
-        variance_scaling_alpha=0.0,
+        buffer_type="ivs",
+        variance_scaling_alpha=1.0,
         async_hp_updates=use_async,
         main_process_device=main_dev,
         worker_device_str=worker_dev,
         buffer_max_size=buffer_size,
         min_points_for_initial_train=min_points,
         refit_hyperparams_interval=refit_interval,
-        buffer_level_capacities=_allocate_level_capacities(buffer_size),
-        buffer_level_sparsity=[1, 3, 6],
     )
 
 
@@ -230,7 +164,7 @@ def _run_variant(
         "use_offline_gp": True,
         "use_online_gp": True,
         "gp_config": gp_cfg,
-        "solver_options": {"variance_scaling_alpha": 0.0},
+        "solver_options": {"variance_scaling_alpha": float(gp_cfg.variance_scaling_alpha)},
     }
 
     rmse_list, latency_list, max_vel_list = [], [], []
@@ -248,6 +182,7 @@ def _run_variant(
         )
         if result is None:
             continue
+
         rmse_list.append(float(result["rmse"]))
         max_vel_list.append(float(result["max_vel"]))
         opt_list.append(float(result.get("opt_time", np.nan)))
@@ -290,35 +225,27 @@ def _run_variant(
 
 
 def _make_record(study: str, variant: str, cfg: OnlineGPConfig, metrics: Dict, **extra) -> Dict:
-    caps = list(getattr(cfg, "buffer_level_capacities", []) or [])
-    sparsity = list(getattr(cfg, "buffer_level_sparsity", []) or [])
     return {
         "study": study,
         "variant": variant,
-        "novelty_weight": float(getattr(cfg, "novelty_weight", np.nan)),
-        "recency_weight": float(getattr(cfg, "recency_weight", np.nan)),
-        "recency_decay_rate": float(getattr(cfg, "recency_decay_rate", np.nan)),
+        "buffer_insert_min_delta_v": float(getattr(cfg, "buffer_insert_min_delta_v", np.nan)),
+        "buffer_prune_old_delta_v": float(getattr(cfg, "buffer_prune_old_delta_v", np.nan)),
+        "buffer_flip_prune_limit": int(getattr(cfg, "buffer_flip_prune_limit", 0)),
         "buffer_max_size": int(getattr(cfg, "buffer_max_size", 0)),
         "gp_kernel": str(getattr(cfg, "gp_kernel", "rbf")),
         "gp_matern_nu": float(getattr(cfg, "gp_matern_nu", np.nan)),
-        "level_profile": str(extra.get("level_profile", "")),
-        "level_capacities": "-".join(str(int(c)) for c in caps) if caps else "",
-        "level_sparsity": "-".join(str(int(s)) for s in sparsity) if sparsity else "",
-        "buffer_min_distance": float(getattr(cfg, "buffer_min_distance", np.nan)),
-        "buffer_local_dup_cap": int(getattr(cfg, "buffer_local_dup_cap", 0)),
-        "buffer_close_update_v_ratio": float(getattr(cfg, "buffer_close_update_v_ratio", np.nan)),
-        "buffer_close_update_y_threshold": float(getattr(cfg, "buffer_close_update_y_threshold", np.nan)),
-        "train_mode": str(extra.get("train_mode", "sync")),
-        "gp_device": str(extra.get("gp_device", "auto")),
+        "kernel_index": int(extra.get("kernel_index", -1)),
+        "train_mode": str(extra.get("train_mode", "async")),
+        "gp_device": str(extra.get("gp_device", "cpu")),
         "latency_metric": str(extra.get("latency_metric", "control")),
         "sobol_index": int(extra.get("sobol_index", -1)),
         "sobol_source": str(extra.get("sobol_source", "")),
-        "baseline_tag": "fixed_baseline_v1",
+        "baseline_tag": "simplified_ivs_v1",
         **metrics,
     }
 
 
-def run_novelty_decay_sensitivity(
+def run_threshold_sensitivity(
     mode: str,
     speed: float,
     trajectory_type: str,
@@ -330,21 +257,20 @@ def run_novelty_decay_sensitivity(
     latency_metric: str,
     run_budget: Dict[str, Optional[int]],
 ) -> List[Dict]:
-    vals = _study_values(mode)["novelty_decay"]
+    vals = _study_values(mode)["thresholds"]
     records = []
-    for novelty in vals["novelty"]:
-        for decay in vals["decay"]:
+    for insert_delta in vals["insert"]:
+        for prune_delta in vals["prune"]:
             if not _consume_budget(run_budget):
                 return records
-            cfg = _base_ivs_config(buffer_size=14, train_mode=train_mode, gp_device=gp_device)
+            cfg = _base_ivs_config(buffer_size=13, train_mode=train_mode, gp_device=gp_device)
             cfg = replace(
                 cfg,
-                novelty_weight=float(novelty),
-                recency_weight=float(1.0 - novelty),
-                recency_decay_rate=float(decay),
+                buffer_insert_min_delta_v=float(insert_delta),
+                buffer_prune_old_delta_v=float(prune_delta),
             )
-            name = f"nov{novelty:.2f}_dec{decay:.2f}"
-            print(f"[novelty_decay] Running {name} ...")
+            name = f"thr_ins{insert_delta:.2f}_prn{prune_delta:.2f}"
+            print(f"[thresholds] Running {name} ...")
             metrics = _run_variant(
                 variant_name=name,
                 gp_cfg=cfg,
@@ -358,7 +284,7 @@ def run_novelty_decay_sensitivity(
             if metrics:
                 records.append(
                     _make_record(
-                        "novelty_decay",
+                        "thresholds",
                         name,
                         cfg,
                         metrics,
@@ -374,7 +300,7 @@ def run_novelty_decay_sensitivity(
     return records
 
 
-def run_levels_sensitivity(
+def run_flip_limit_sensitivity(
     mode: str,
     speed: float,
     trajectory_type: str,
@@ -386,24 +312,15 @@ def run_levels_sensitivity(
     latency_metric: str,
     run_budget: Dict[str, Optional[int]],
 ) -> List[Dict]:
-    profiles = _study_values(mode)["levels"]["profiles"]
+    values = _study_values(mode)["flip_limit"]["values"]
     records = []
-
-    for profile in profiles:
+    for flip_limit in values:
         if not _consume_budget(run_budget):
             return records
-        caps = [int(v) for v in profile["caps"]]
-        sparsity = [int(v) for v in profile["sparsity"]]
-        size = int(sum(caps))
-        cfg = _base_ivs_config(buffer_size=size, train_mode=train_mode, gp_device=gp_device)
-        cfg = replace(
-            cfg,
-            buffer_type='ivs',
-            buffer_level_capacities=caps,
-            buffer_level_sparsity=sparsity,
-        )
-        name = f"levels_{profile['name']}"
-        print(f"[levels] Running {name} ...")
+        cfg = _base_ivs_config(buffer_size=13, train_mode=train_mode, gp_device=gp_device)
+        cfg = replace(cfg, buffer_flip_prune_limit=int(flip_limit))
+        name = f"flip_{int(flip_limit)}"
+        print(f"[flip_limit] Running {name} ...")
         metrics = _run_variant(
             variant_name=name,
             gp_cfg=cfg,
@@ -417,11 +334,10 @@ def run_levels_sensitivity(
         if metrics:
             records.append(
                 _make_record(
-                    "levels",
+                    "flip_limit",
                     name,
                     cfg,
                     metrics,
-                    level_profile=str(profile["name"]),
                     train_mode=train_mode,
                     gp_device=gp_device,
                     latency_metric=latency_metric,
@@ -434,7 +350,7 @@ def run_levels_sensitivity(
     return records
 
 
-def run_distance_sensitivity(
+def run_buffer_size_sensitivity(
     mode: str,
     speed: float,
     trajectory_type: str,
@@ -446,51 +362,40 @@ def run_distance_sensitivity(
     latency_metric: str,
     run_budget: Dict[str, Optional[int]],
 ) -> List[Dict]:
-    vals = _study_values(mode)["distance"]
-    min_distances = vals["min_distance"]
-    local_dup_caps = vals["local_dup_cap"]
+    values = _study_values(mode)["buffer_size"]["values"]
     records = []
-
-    for min_d in min_distances:
-        for dup_cap in local_dup_caps:
-            if not _consume_budget(run_budget):
-                return records
-            cfg = _base_ivs_config(buffer_size=14, train_mode=train_mode, gp_device=gp_device)
-            cfg = replace(
-                cfg,
-                buffer_type='ivs',
-                buffer_min_distance=float(min_d),
-                buffer_local_dup_cap=int(dup_cap),
-            )
-            name = f"dist{min_d:.3f}_cap{int(dup_cap)}"
-            print(f"[distance] Running {name} ...")
-            metrics = _run_variant(
-                variant_name=name,
-                gp_cfg=cfg,
-                speed=speed,
-                trajectory_type=trajectory_type,
-                wind_profile=wind_profile,
-                seed_base=seed_base,
-                n_seeds=n_seeds,
-                latency_metric=latency_metric,
-            )
-            if metrics:
-                records.append(
-                    _make_record(
-                        "distance",
-                        name,
-                        cfg,
-                        metrics,
-                        level_profile=f"dup_cap_{int(dup_cap)}",
-                        train_mode=train_mode,
-                        gp_device=gp_device,
-                        latency_metric=latency_metric,
-                    )
+    for size in values:
+        if not _consume_budget(run_budget):
+            return records
+        cfg = _base_ivs_config(buffer_size=int(size), train_mode=train_mode, gp_device=gp_device)
+        name = f"buf_{int(size)}"
+        print(f"[buffer_size] Running {name} ...")
+        metrics = _run_variant(
+            variant_name=name,
+            gp_cfg=cfg,
+            speed=speed,
+            trajectory_type=trajectory_type,
+            wind_profile=wind_profile,
+            seed_base=seed_base,
+            n_seeds=n_seeds,
+            latency_metric=latency_metric,
+        )
+        if metrics:
+            records.append(
+                _make_record(
+                    "buffer_size",
+                    name,
+                    cfg,
+                    metrics,
+                    train_mode=train_mode,
+                    gp_device=gp_device,
+                    latency_metric=latency_metric,
                 )
-                print(
-                    f"  rmse={metrics['rmse_mean']:.4f}±{metrics['rmse_std']:.4f}, "
-                    f"lat={metrics['latency_mean']*1000.0:.2f} ms"
-                )
+            )
+            print(
+                f"  rmse={metrics['rmse_mean']:.4f}±{metrics['rmse_std']:.4f}, "
+                f"lat={metrics['latency_mean']*1000.0:.2f} ms"
+            )
     return records
 
 
@@ -508,12 +413,12 @@ def run_kernel_sensitivity(
 ) -> List[Dict]:
     kernel_specs = _study_values(mode)["kernel"]["kernels"]
     records = []
-    for spec in kernel_specs:
+    for idx, spec in enumerate(kernel_specs):
         if not _consume_budget(run_budget):
             return records
         kernel = str(spec["kernel"])
         nu = float(spec.get("nu", 2.5))
-        cfg = _base_ivs_config(buffer_size=14, train_mode=train_mode, gp_device=gp_device)
+        cfg = _base_ivs_config(buffer_size=13, train_mode=train_mode, gp_device=gp_device)
         cfg = replace(cfg, gp_kernel=kernel, gp_matern_nu=nu)
         suffix = f"{kernel}_nu{nu:.2f}" if kernel == "matern_nu" else kernel
         name = f"kernel_{suffix}"
@@ -538,6 +443,7 @@ def run_kernel_sensitivity(
                     train_mode=train_mode,
                     gp_device=gp_device,
                     latency_metric=latency_metric,
+                    kernel_index=idx,
                 )
             )
             print(
@@ -548,12 +454,11 @@ def run_kernel_sensitivity(
 
 
 def _unit_sobol_samples(n_points: int, dim: int, seed: int) -> Tuple[np.ndarray, str]:
-    """
-    Generate quasi-random points in [0,1]^d. Prefer Sobol, fallback to uniform RNG.
-    """
+    """Generate quasi-random points in [0,1]^d; Sobol preferred."""
     n_points = int(max(1, n_points))
     try:
         from scipy.stats import qmc
+
         m = int(np.ceil(np.log2(max(2, n_points))))
         sampler = qmc.Sobol(d=dim, scramble=True, seed=seed)
         unit = sampler.random_base2(m=m)[:n_points]
@@ -575,54 +480,35 @@ def run_sobol_sensitivity(
     latency_metric: str,
     run_budget: Dict[str, Optional[int]],
 ) -> List[Dict]:
-    """
-    Joint-parameter sweep to capture interaction effects.
-    """
+    """Joint sweep to capture interactions under simplified parameter set."""
     n_points = int(_study_values(mode)["sobol"]["n_points"])
-    level_profiles = _study_values(mode)["levels"]["profiles"]
     kernel_choices = [
         {"kernel": "rbf", "nu": 2.5},
         {"kernel": "matern32", "nu": 1.5},
         {"kernel": "matern52", "nu": 2.5},
+        {"kernel": "matern_nu", "nu": 1.8},
     ]
 
-    # dimensions:
-    # [novelty, decay, min_distance, local_dup_cap, buffer_size,
-    #  level_profile_idx, kernel_idx, close_update_v_ratio, close_update_y_threshold]
-    unit, source = _unit_sobol_samples(n_points=n_points, dim=9, seed=seed_base + 17)
+    # dimensions: [insert, prune, flip_limit, buffer_size, kernel_idx]
+    unit, source = _unit_sobol_samples(n_points=n_points, dim=5, seed=seed_base + 17)
     records = []
     for i, u in enumerate(unit):
         if not _consume_budget(run_budget):
             return records
 
-        novelty = 0.05 + float(u[0]) * (0.85 - 0.05)
-        decay = 0.03 + float(u[1]) * (0.35 - 0.03)
-        min_distance = 0.006 + float(u[2]) * (0.040 - 0.006)
-        local_dup_cap = int(round(2 + float(u[3]) * (8 - 2)))
-        buffer_size = int(round(10 + float(u[4]) * (26 - 10)))
-
-        p_idx = min(len(level_profiles) - 1, int(float(u[5]) * len(level_profiles)))
-        k_idx = min(len(kernel_choices) - 1, int(float(u[6]) * len(kernel_choices)))
-        close_v_ratio = 0.15 + float(u[7]) * (0.60 - 0.15)
-        close_y_threshold = 0.015 + float(u[8]) * (0.08 - 0.015)
-        profile = level_profiles[p_idx]
-        kernel_spec = kernel_choices[k_idx]
-
-        caps = _scale_capacities(profile["caps"], buffer_size)
-        sparsity = [int(v) for v in profile["sparsity"]]
+        insert_delta = 0.08 + float(u[0]) * (0.25 - 0.08)
+        prune_delta = 0.08 + float(u[1]) * (0.25 - 0.08)
+        flip_limit = int(np.clip(np.round(float(u[2]) * 5.0), 0, 5))
+        buffer_size = int(np.clip(np.round(8 + float(u[3]) * (24 - 8)), 8, 24))
+        kernel_idx = int(min(len(kernel_choices) - 1, np.floor(float(u[4]) * len(kernel_choices))))
+        kernel_spec = kernel_choices[kernel_idx]
 
         cfg = _base_ivs_config(buffer_size=buffer_size, train_mode=train_mode, gp_device=gp_device)
         cfg = replace(
             cfg,
-            novelty_weight=float(novelty),
-            recency_weight=float(1.0 - novelty),
-            recency_decay_rate=float(decay),
-            buffer_min_distance=float(min_distance),
-            buffer_local_dup_cap=int(np.clip(local_dup_cap, 2, 8)),
-            buffer_close_update_v_ratio=float(close_v_ratio),
-            buffer_close_update_y_threshold=float(close_y_threshold),
-            buffer_level_capacities=caps,
-            buffer_level_sparsity=sparsity,
+            buffer_insert_min_delta_v=float(insert_delta),
+            buffer_prune_old_delta_v=float(prune_delta),
+            buffer_flip_prune_limit=int(flip_limit),
             gp_kernel=str(kernel_spec["kernel"]),
             gp_matern_nu=float(kernel_spec.get("nu", 2.5)),
         )
@@ -646,12 +532,12 @@ def run_sobol_sensitivity(
                     name,
                     cfg,
                     metrics,
-                    level_profile=str(profile["name"]),
                     train_mode=train_mode,
                     gp_device=gp_device,
                     latency_metric=latency_metric,
                     sobol_index=i,
                     sobol_source=source,
+                    kernel_index=int(kernel_idx),
                 )
             )
             print(
@@ -666,11 +552,8 @@ def save_records_csv(records: List[Dict], out_path: str) -> None:
         return
     fieldnames = [
         "study", "variant", "baseline_tag",
-        "novelty_weight", "recency_weight", "recency_decay_rate",
-        "buffer_max_size", "buffer_min_distance", "buffer_local_dup_cap",
-        "buffer_close_update_v_ratio", "buffer_close_update_y_threshold",
-        "level_profile", "level_capacities", "level_sparsity",
-        "gp_kernel", "gp_matern_nu",
+        "buffer_insert_min_delta_v", "buffer_prune_old_delta_v", "buffer_flip_prune_limit",
+        "buffer_max_size", "gp_kernel", "gp_matern_nu", "kernel_index",
         "train_mode", "gp_device", "latency_metric",
         "sobol_index", "sobol_source",
         "rmse_mean", "rmse_std",
@@ -701,19 +584,19 @@ def _subset(records: List[Dict], study: str) -> List[Dict]:
     return [r for r in records if r.get("study") == study]
 
 
-def plot_novelty_decay(records: List[Dict], out_dir: str) -> None:
-    rows = _subset(records, "novelty_decay")
+def plot_threshold_heatmap(records: List[Dict], out_dir: str) -> None:
+    rows = _subset(records, "thresholds")
     if not rows:
         return
 
-    novelty_vals = sorted({float(r["novelty_weight"]) for r in rows})
-    decay_vals = sorted({float(r["recency_decay_rate"]) for r in rows})
-    rmse_mat = np.full((len(novelty_vals), len(decay_vals)), np.nan, dtype=float)
-    lat_mat = np.full((len(novelty_vals), len(decay_vals)), np.nan, dtype=float)
+    insert_vals = sorted({float(r["buffer_insert_min_delta_v"]) for r in rows})
+    prune_vals = sorted({float(r["buffer_prune_old_delta_v"]) for r in rows})
+    rmse_mat = np.full((len(insert_vals), len(prune_vals)), np.nan, dtype=float)
+    lat_mat = np.full((len(insert_vals), len(prune_vals)), np.nan, dtype=float)
 
     for r in rows:
-        i = novelty_vals.index(float(r["novelty_weight"]))
-        j = decay_vals.index(float(r["recency_decay_rate"]))
+        i = insert_vals.index(float(r["buffer_insert_min_delta_v"]))
+        j = prune_vals.index(float(r["buffer_prune_old_delta_v"]))
         rmse_mat[i, j] = float(r["rmse_mean"])
         lat_mat[i, j] = float(r["latency_mean"]) * 1000.0
 
@@ -722,12 +605,12 @@ def plot_novelty_decay(records: List[Dict], out_dir: str) -> None:
     im1 = axes[1].imshow(lat_mat, cmap="magma_r", aspect="auto", origin="lower")
 
     for ax in axes:
-        ax.set_xticks(range(len(decay_vals)))
-        ax.set_xticklabels([f"{v:.2f}" for v in decay_vals])
-        ax.set_yticks(range(len(novelty_vals)))
-        ax.set_yticklabels([f"{v:.2f}" for v in novelty_vals])
-        ax.set_xlabel("Recency Decay")
-        ax.set_ylabel("Novelty Weight")
+        ax.set_xticks(range(len(prune_vals)))
+        ax.set_xticklabels([f"{v:.2f}" for v in prune_vals])
+        ax.set_yticks(range(len(insert_vals)))
+        ax.set_yticklabels([f"{v:.2f}" for v in insert_vals])
+        ax.set_xlabel("prune_old_delta_v")
+        ax.set_ylabel("insert_min_delta_v")
 
     axes[0].set_title("RMSE Heatmap")
     axes[1].set_title("Latency Heatmap")
@@ -737,75 +620,61 @@ def plot_novelty_decay(records: List[Dict], out_dir: str) -> None:
     cbar1.set_label("Latency (ms)")
 
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "sensitivity_novelty_decay_heatmap.pdf"), bbox_inches="tight")
+    fig.savefig(os.path.join(out_dir, "sensitivity_thresholds_heatmap.pdf"), bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_levels_tradeoff(records: List[Dict], out_dir: str) -> None:
-    rows = _subset(records, "levels")
+def plot_flip_limit_tradeoff(records: List[Dict], out_dir: str) -> None:
+    rows = _subset(records, "flip_limit")
     if not rows:
         return
 
-    rows = sorted(rows, key=lambda r: r["level_profile"])
-    labels = [str(r["level_profile"]) for r in rows]
+    rows = sorted(rows, key=lambda r: int(r["buffer_flip_prune_limit"]))
+    x = np.array([int(r["buffer_flip_prune_limit"]) for r in rows], dtype=int)
     rmse = np.array([float(r["rmse_mean"]) for r in rows], dtype=float)
     lat_ms = np.array([float(r["latency_mean"]) * 1000.0 for r in rows], dtype=float)
 
-    fig, ax1 = plt.subplots(figsize=(7.2, 2.8))
-    x = np.arange(len(labels))
-    bars = ax1.bar(x, rmse, color=SCI_COLORS[1], alpha=0.85)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, rotation=20, ha="right")
+    fig, ax1 = plt.subplots(figsize=(6.6, 2.8))
+    ax1.plot(x, rmse, color=SCI_COLORS[0], marker="o", linewidth=1.3)
+    ax1.set_xlabel("buffer_flip_prune_limit")
     ax1.set_ylabel("RMSE (m)")
-    ax1.set_title("Multi-level Layout Sensitivity")
-    ax1.grid(axis="y")
+    ax1.set_title("Flip-Prune Limit Sensitivity")
+    ax1.grid(True)
 
     ax2 = ax1.twinx()
     ax2.plot(x, lat_ms, color=SCI_COLORS[3], marker="s", linewidth=1.2)
     ax2.set_ylabel("Latency (ms)")
 
-    ax1.legend([bars, ax2.lines[0]], ["RMSE", "Latency"], loc="upper left", frameon=False)
+    ax1.legend([ax1.lines[0], ax2.lines[0]], ["RMSE", "Latency"], loc="upper left", frameon=False)
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "sensitivity_levels_tradeoff.pdf"), bbox_inches="tight")
+    fig.savefig(os.path.join(out_dir, "sensitivity_flip_limit_tradeoff.pdf"), bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_distance_sensitivity(records: List[Dict], out_dir: str) -> None:
-    rows = _subset(records, "distance")
+def plot_buffer_size_tradeoff(records: List[Dict], out_dir: str) -> None:
+    rows = _subset(records, "buffer_size")
     if not rows:
         return
 
-    cap_to_rows: Dict[str, List[Dict]] = {}
-    for r in rows:
-        key = str(int(r["buffer_local_dup_cap"]))
-        cap_to_rows.setdefault(key, []).append(r)
+    rows = sorted(rows, key=lambda r: int(r["buffer_max_size"]))
+    x = np.array([int(r["buffer_max_size"]) for r in rows], dtype=int)
+    rmse = np.array([float(r["rmse_mean"]) for r in rows], dtype=float)
+    lat_ms = np.array([float(r["latency_mean"]) * 1000.0 for r in rows], dtype=float)
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 2.8))
-    for idx, (cap, r_rows) in enumerate(sorted(cap_to_rows.items(), key=lambda kv: int(kv[0]))):
-        r_rows = sorted(r_rows, key=lambda r: float(r["buffer_min_distance"]))
-        x = [float(r["buffer_min_distance"]) for r in r_rows]
-        y_rmse = [float(r["rmse_mean"]) for r in r_rows]
-        y_lat = [float(r["latency_mean"]) * 1000.0 for r in r_rows]
-        color = SCI_COLORS[idx % len(SCI_COLORS)]
-        label = f"local_dup_cap={int(cap)}"
-        axes[0].plot(x, y_rmse, marker="o", linewidth=1.2, color=color, label=label)
-        axes[1].plot(x, y_lat, marker="o", linewidth=1.2, color=color, label=label)
+    fig, ax1 = plt.subplots(figsize=(6.8, 2.8))
+    ax1.plot(x, rmse, color=SCI_COLORS[1], marker="o", linewidth=1.3)
+    ax1.set_xlabel("buffer_max_size")
+    ax1.set_ylabel("RMSE (m)")
+    ax1.set_title("Buffer Size Sensitivity")
+    ax1.grid(True)
 
-    axes[0].set_xlabel("min_distance")
-    axes[0].set_ylabel("RMSE (m)")
-    axes[0].set_title("Distance vs RMSE")
-    axes[0].grid(True)
+    ax2 = ax1.twinx()
+    ax2.plot(x, lat_ms, color=SCI_COLORS[3], marker="s", linewidth=1.2)
+    ax2.set_ylabel("Latency (ms)")
 
-    axes[1].set_xlabel("min_distance")
-    axes[1].set_ylabel("Latency (ms)")
-    axes[1].set_title("Distance vs Latency")
-    axes[1].grid(True)
-
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(4, len(labels)), frameon=False, bbox_to_anchor=(0.5, 1.06))
+    ax1.legend([ax1.lines[0], ax2.lines[0]], ["RMSE", "Latency"], loc="upper left", frameon=False)
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "sensitivity_distance_tradeoff.pdf"), bbox_inches="tight")
+    fig.savefig(os.path.join(out_dir, "sensitivity_buffer_size_tradeoff.pdf"), bbox_inches="tight")
     plt.close(fig)
 
 
@@ -853,12 +722,12 @@ def plot_sobol_scatter(records: List[Dict], out_dir: str) -> None:
 
     x = np.array([float(r["latency_mean"]) * 1000.0 for r in rows], dtype=float)
     y = np.array([float(r["rmse_mean"]) for r in rows], dtype=float)
-    c = np.array([float(r["novelty_weight"]) for r in rows], dtype=float)
+    c = np.array([float(r["buffer_max_size"]) for r in rows], dtype=float)
 
     fig, ax = plt.subplots(figsize=(4.6, 3.2))
     sc = ax.scatter(x, y, c=c, cmap="viridis", s=25, alpha=0.85)
     cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Novelty Weight")
+    cbar.set_label("buffer_max_size")
     ax.set_xlabel("Latency (ms)")
     ax.set_ylabel("RMSE (m)")
     ax.set_title("Sobol Sweep: RMSE-Latency")
@@ -891,13 +760,11 @@ def plot_sobol_rankcorr(records: List[Dict], out_dir: str) -> None:
         return
 
     params = {
-        "novelty": np.array([float(r["novelty_weight"]) for r in rows], dtype=float),
-        "decay": np.array([float(r["recency_decay_rate"]) for r in rows], dtype=float),
+        "insert_dv": np.array([float(r["buffer_insert_min_delta_v"]) for r in rows], dtype=float),
+        "prune_dv": np.array([float(r["buffer_prune_old_delta_v"]) for r in rows], dtype=float),
+        "flip_lim": np.array([float(r["buffer_flip_prune_limit"]) for r in rows], dtype=float),
         "buf_size": np.array([float(r["buffer_max_size"]) for r in rows], dtype=float),
-        "min_dist": np.array([float(r["buffer_min_distance"]) for r in rows], dtype=float),
-        "dup_cap": np.array([float(r["buffer_local_dup_cap"]) for r in rows], dtype=float),
-        "close_vr": np.array([float(r["buffer_close_update_v_ratio"]) for r in rows], dtype=float),
-        "close_yt": np.array([float(r["buffer_close_update_y_threshold"]) for r in rows], dtype=float),
+        "kernel_i": np.array([float(r.get("kernel_index", -1)) for r in rows], dtype=float),
     }
     rmse = np.array([float(r["rmse_mean"]) for r in rows], dtype=float)
     latency = np.array([float(r["latency_mean"]) for r in rows], dtype=float)
@@ -946,30 +813,67 @@ def plot_pareto(records: List[Dict], out_dir: str) -> None:
 
 
 def parse_studies(studies_arg: str) -> List[str]:
-    allowed = {"novelty_decay", "levels", "distance", "kernel", "sobol"}
-    parsed = [s.strip() for s in studies_arg.split(",") if s.strip()]
-    parsed = [s for s in parsed if s in allowed]
-    return parsed if parsed else ["novelty_decay", "levels", "distance", "kernel", "sobol"]
+    """
+    Parse study list with backward-compatible aliases:
+    - novelty_decay / distance -> thresholds
+    - levels -> buffer_size
+    """
+    aliases = {
+        "novelty_decay": "thresholds",
+        "distance": "thresholds",
+        "levels": "buffer_size",
+    }
+    allowed = {"thresholds", "flip_limit", "buffer_size", "kernel", "sobol"}
+    parsed_raw = [s.strip() for s in studies_arg.split(",") if s.strip()]
+    parsed = []
+    for s in parsed_raw:
+        normalized = aliases.get(s, s)
+        if normalized in allowed and normalized not in parsed:
+            parsed.append(normalized)
+    return parsed if parsed else ["thresholds", "flip_limit", "buffer_size", "kernel", "sobol"]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sensitivity analysis for AR-MPC online GP components")
+    parser = argparse.ArgumentParser(description="Sensitivity analysis for AR-MPC online GP simplified IVS buffer")
     parser.add_argument("--mode", type=str, default="smoke", choices=["smoke", "quick", "full"])
-    parser.add_argument("--studies", type=str, default="novelty_decay,levels,distance,kernel,sobol",
-                        help="Comma-separated: novelty_decay,levels,distance,kernel,sobol")
+    parser.add_argument(
+        "--studies",
+        type=str,
+        default="thresholds,flip_limit,buffer_size,kernel,sobol",
+        help="Comma-separated: thresholds,flip_limit,buffer_size,kernel,sobol",
+    )
     parser.add_argument("--speed", type=float, default=3.0)
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
     parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"])
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--seed-base", type=int, default=303)
-    parser.add_argument("--train-mode", type=str, default="async", choices=["sync", "async"],
-                        help="sync: no worker process. async: asynchronous worker updates.")
-    parser.add_argument("--gp-device", type=str, default="cpu", choices=["auto", "cpu", "cuda"],
-                        help="GPU for online GP training/inference (if available).")
-    parser.add_argument("--latency-metric", type=str, default="control", choices=["opt", "update", "control"],
-                        help="Latency metric used in trade-off plots.")
-    parser.add_argument("--max-runs", type=int, default=0,
-                        help="Optional cap on total variants across selected studies (0 = no cap).")
+    parser.add_argument(
+        "--train-mode",
+        type=str,
+        default="async",
+        choices=["sync", "async"],
+        help="sync: no worker process. async: asynchronous worker updates.",
+    )
+    parser.add_argument(
+        "--gp-device",
+        type=str,
+        default="cpu",
+        choices=["auto", "cpu", "cuda"],
+        help="GPU for online GP training/inference (if available).",
+    )
+    parser.add_argument(
+        "--latency-metric",
+        type=str,
+        default="control",
+        choices=["opt", "update", "control"],
+        help="Latency metric used in trade-off plots.",
+    )
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        default=0,
+        help="Optional cap on total variants across selected studies (0 = no cap).",
+    )
     parser.add_argument("--out-dir", type=str, default="outputs/figures")
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
@@ -982,7 +886,7 @@ def main():
     set_publication_style(base_size=9)
 
     print("=" * 76)
-    print("Sensitivity Experiment (OAT + Sobol)")
+    print("Sensitivity Experiment (simplified IVS)")
     print("=" * 76)
     print(
         f"Mode={args.mode}, Studies={selected}, Seeds={args.seeds}, "
@@ -993,9 +897,9 @@ def main():
     )
 
     records: List[Dict] = []
-    if "novelty_decay" in selected:
+    if "thresholds" in selected:
         records.extend(
-            run_novelty_decay_sensitivity(
+            run_threshold_sensitivity(
                 mode=args.mode,
                 speed=args.speed,
                 trajectory_type=args.trajectory,
@@ -1008,9 +912,9 @@ def main():
                 run_budget=run_budget,
             )
         )
-    if "levels" in selected:
+    if "flip_limit" in selected:
         records.extend(
-            run_levels_sensitivity(
+            run_flip_limit_sensitivity(
                 mode=args.mode,
                 speed=args.speed,
                 trajectory_type=args.trajectory,
@@ -1023,9 +927,9 @@ def main():
                 run_budget=run_budget,
             )
         )
-    if "distance" in selected:
+    if "buffer_size" in selected:
         records.extend(
-            run_distance_sensitivity(
+            run_buffer_size_sensitivity(
                 mode=args.mode,
                 speed=args.speed,
                 trajectory_type=args.trajectory,
@@ -1078,9 +982,9 @@ def main():
     print(f"Saved json:  {json_path}")
 
     if not args.no_plots:
-        plot_novelty_decay(records, out_dir)
-        plot_levels_tradeoff(records, out_dir)
-        plot_distance_sensitivity(records, out_dir)
+        plot_threshold_heatmap(records, out_dir)
+        plot_flip_limit_tradeoff(records, out_dir)
+        plot_buffer_size_tradeoff(records, out_dir)
         plot_kernel_tradeoff(records, out_dir)
         plot_sobol_scatter(records, out_dir)
         plot_sobol_rankcorr(records, out_dir)
@@ -1089,13 +993,13 @@ def main():
 
     if records:
         print("\nSummary by study:")
-        for study in ["novelty_decay", "levels", "distance", "kernel", "sobol"]:
+        for study in ["thresholds", "flip_limit", "buffer_size", "kernel", "sobol"]:
             s_rows = _subset(records, study)
             if not s_rows:
                 continue
             best = min(s_rows, key=lambda r: r["rmse_mean"])
             print(
-                f"  {study:<12} best={best['variant']:<18} "
+                f"  {study:<12} best={best['variant']:<22} "
                 f"rmse={best['rmse_mean']:.4f}, lat={best['latency_mean']*1000.0:.2f} ms"
             )
     else:

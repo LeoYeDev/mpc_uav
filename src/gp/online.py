@@ -220,41 +220,25 @@ class IncrementalGP:
         else:
             if buffer_type not in ('ivs', 'ivs_multilevel'):
                 print(f"[IncrementalGP] Unknown buffer_type='{buffer_type}', fallback to multi-level IVS.")
-            # IVS path: always use multi-level IVS (single-level branch removed)
-            novelty_weight = float(config.get('novelty_weight', 0.2))
-            recency_weight = float(config.get('recency_weight', max(0.0, 1.0 - novelty_weight)))
-            recency_decay_rate = float(config.get('recency_decay_rate', 0.1))
-            min_distance = float(config.get('buffer_min_distance', 0.01))
+            # IVS path (simplified): two-threshold de-densification + direction-flip cleanup.
+            insert_min_delta_v = float(config.get('buffer_insert_min_delta_v', 0.15))
+            prune_old_delta_v = float(config.get('buffer_prune_old_delta_v', 0.15))
+            flip_prune_limit = int(config.get('buffer_flip_prune_limit', 3))
             level_capacities = config.get('buffer_level_capacities', None)
             level_sparsity = config.get('buffer_level_sparsity', None)
-            cluster_anchor_window = int(config.get('cluster_anchor_window', 6))
-            cluster_gap_factor = float(config.get('cluster_gap_factor', 2.5))
-            out_cluster_penalty = float(config.get('out_cluster_penalty', 0.35))
-            target_size_slack = int(config.get('target_size_slack', 1))
-            local_dup_cap = int(config.get('buffer_local_dup_cap', 4))
-            close_update_v_ratio = float(config.get('buffer_close_update_v_ratio', 0.35))
-            close_update_y_threshold = float(config.get('buffer_close_update_y_threshold', 0.03))
-            full_rescore_period = int(config.get('ivs_full_rescore_period', 4))
-            coverage_bins = int(config.get('ivs_coverage_bins', 10))
-            min_cover_ratio = float(config.get('ivs_min_cover_ratio', 0.55))
+            novelty_weight = float(config.get('novelty_weight', 0.55))
+            recency_weight = float(config.get('recency_weight', 0.45))
+            recency_decay_rate = float(config.get('recency_decay_rate', 0.10))
             self.buffer = MultiLevelInformationGainBuffer(
                 max_size=max_size,
-                novelty_weight=novelty_weight,
-                recency_weight=recency_weight,
-                decay_rate=recency_decay_rate,
-                min_distance=min_distance,
+                insert_min_delta_v=insert_min_delta_v,
+                prune_old_delta_v=prune_old_delta_v,
+                flip_prune_limit=flip_prune_limit,
                 level_capacities=level_capacities,
                 level_sparsity=level_sparsity,
-                cluster_anchor_window=cluster_anchor_window,
-                cluster_gap_factor=cluster_gap_factor,
-                out_cluster_penalty=out_cluster_penalty,
-                target_size_slack=target_size_slack,
-                local_dup_cap=local_dup_cap,
-                close_update_v_ratio=close_update_v_ratio,
-                close_update_y_threshold=close_update_y_threshold,
-                full_rescore_period=full_rescore_period,
-                coverage_bins=coverage_bins,
-                min_cover_ratio=min_cover_ratio,
+                novelty_weight=novelty_weight,
+                recency_weight=recency_weight,
+                recency_decay_rate=recency_decay_rate,
             )
 
         # 批量归一化统计量（每次从缓冲区计算，避免EMA漂移）
@@ -420,10 +404,6 @@ class IncrementalGPManager:
             except Exception as e:
                 print(f"[GPManager] torch.set_num_threads({self.torch_num_threads}) failed: {e}")
         self.async_hp_updates = bool(self.config.get('async_hp_updates', True))
-        self.ivs_query_clamp_margin = float(self.config.get('ivs_query_clamp_margin', 0.10))
-        self.online_predict_need_variance_when_alpha_zero = bool(
-            self.config.get('online_predict_need_variance_when_alpha_zero', False)
-        )
         self.predict_use_likelihood_variance = bool(self.config.get('predict_use_likelihood_variance', False))
         self.predict_cache_enabled = bool(self.config.get('predict_cache_enabled', True))
         self.predict_cache_tolerance = float(self.config.get('predict_cache_tolerance', 0.05))
@@ -444,14 +424,15 @@ class IncrementalGPManager:
             "gp_predict_ms": 0.0,
             "buffer_update_ms": 0.0,
             "queue_overhead_ms": 0.0,
-            "full_merge_calls": 0,
-            "query_out_of_range_ratio_last": 0.0,
-            "query_out_of_range_ratio_mean": 0.0,
             "selected_size_mean_last": 0.0,
             "unique_ratio_mean_last": 0.0,
             "predict_cache_hits": 0.0,
+            "insert_accept_ratio_mean_last": 0.0,
+            "insert_skip_ratio_mean_last": 0.0,
+            "prune_old_count_mean_last": 0.0,
+            "flip_delete_count_mean_last": 0.0,
+            "full_merge_calls": 0,
         }
-        self._query_out_of_range_samples = 0
         self._update_counter = 0
         self._model_version = 0
         self._predict_cache = {
@@ -610,6 +591,10 @@ class IncrementalGPManager:
 
         selected_sizes = []
         unique_ratios = []
+        insert_accept_ratios = []
+        insert_skip_ratios = []
+        prune_old_counts = []
+        flip_delete_counts = []
 
         for i in range(self.num_dimensions):
             gp = self.gps[i]
@@ -621,6 +606,10 @@ class IncrementalGPManager:
                 diag_fast = gp.buffer.get_diagnostics_fast() if hasattr(gp.buffer, "get_diagnostics_fast") else {}
                 selected_sizes.append(float(diag_fast.get("selected_size", gp.buffer.get_effective_size_fast())))
                 unique_ratios.append(float(diag_fast.get("unique_ratio", 1.0)))
+                insert_accept_ratios.append(float(diag_fast.get("insert_accept_ratio", 1.0)))
+                insert_skip_ratios.append(float(diag_fast.get("insert_skip_ratio", 0.0)))
+                prune_old_counts.append(float(diag_fast.get("prune_old_count_last", 0.0)))
+                flip_delete_counts.append(float(diag_fast.get("flip_delete_count_last", 0.0)))
                 continue
             
             # 检查是否满足触发训练的条件（按 online_update_stride 降频）
@@ -632,6 +621,10 @@ class IncrementalGPManager:
                 diag_fast = gp.buffer.get_diagnostics_fast() if hasattr(gp.buffer, "get_diagnostics_fast") else {}
                 selected_sizes.append(float(diag_fast.get("selected_size", num_training_points)))
                 unique_ratios.append(float(diag_fast.get("unique_ratio", 1.0)))
+                insert_accept_ratios.append(float(diag_fast.get("insert_accept_ratio", 1.0)))
+                insert_skip_ratios.append(float(diag_fast.get("insert_skip_ratio", 0.0)))
+                prune_old_counts.append(float(diag_fast.get("prune_old_count_last", 0.0)))
+                flip_delete_counts.append(float(diag_fast.get("flip_delete_count_last", 0.0)))
                 continue
             should_trigger = False
             # 条件1: 首次训练
@@ -672,12 +665,24 @@ class IncrementalGPManager:
             diag_fast = gp.buffer.get_diagnostics_fast() if hasattr(gp.buffer, "get_diagnostics_fast") else {}
             selected_sizes.append(float(diag_fast.get("selected_size", num_training_points)))
             unique_ratios.append(float(diag_fast.get("unique_ratio", 1.0)))
+            insert_accept_ratios.append(float(diag_fast.get("insert_accept_ratio", 1.0)))
+            insert_skip_ratios.append(float(diag_fast.get("insert_skip_ratio", 0.0)))
+            prune_old_counts.append(float(diag_fast.get("prune_old_count_last", 0.0)))
+            flip_delete_counts.append(float(diag_fast.get("flip_delete_count_last", 0.0)))
 
         self._runtime_stats["update_calls"] += 1
         if selected_sizes:
             self._runtime_stats["selected_size_mean_last"] = float(np.mean(selected_sizes))
         if unique_ratios:
             self._runtime_stats["unique_ratio_mean_last"] = float(np.mean(unique_ratios))
+        if insert_accept_ratios:
+            self._runtime_stats["insert_accept_ratio_mean_last"] = float(np.mean(insert_accept_ratios))
+        if insert_skip_ratios:
+            self._runtime_stats["insert_skip_ratio_mean_last"] = float(np.mean(insert_skip_ratios))
+        if prune_old_counts:
+            self._runtime_stats["prune_old_count_mean_last"] = float(np.mean(prune_old_counts))
+        if flip_delete_counts:
+            self._runtime_stats["flip_delete_count_mean_last"] = float(np.mean(flip_delete_counts))
 
         self._runtime_stats["full_merge_calls"] = int(
             sum(
@@ -762,14 +767,15 @@ class IncrementalGPManager:
            "gp_predict_ms": 0.0,
            "buffer_update_ms": 0.0,
            "queue_overhead_ms": 0.0,
-           "full_merge_calls": 0,
-           "query_out_of_range_ratio_last": 0.0,
-           "query_out_of_range_ratio_mean": 0.0,
            "selected_size_mean_last": 0.0,
            "unique_ratio_mean_last": 0.0,
            "predict_cache_hits": 0.0,
+           "insert_accept_ratio_mean_last": 0.0,
+           "insert_skip_ratio_mean_last": 0.0,
+           "prune_old_count_mean_last": 0.0,
+           "flip_delete_count_mean_last": 0.0,
+           "full_merge_calls": 0,
        })
-       self._query_out_of_range_samples = 0
        self._update_counter = 0
        self._model_version = 0
        self._predict_cache = {
@@ -803,32 +809,13 @@ class IncrementalGPManager:
                 f"query_velocities must have shape (n_samples, {self.num_dimensions}), "
                 f"got {query_arr.shape}"
             )
+        # 保留参数仅用于接口兼容：简化策略下不执行查询点夹紧。
+        _ = clamp_extrapolation
 
         predict_start = time.perf_counter()
         means = np.zeros((query_arr.shape[0], self.num_dimensions), dtype=float)
         variances = np.ones_like(means, dtype=float)
-        clamped_query = np.array(query_arr, copy=True)
-
-        out_of_range_count = 0
-        total_query_count = int(np.prod(clamped_query.shape))
-
-        if clamp_extrapolation and clamped_query.size > 0:
-            margin_ratio = max(0.0, float(self.ivs_query_clamp_margin))
-            for i, gp in enumerate(self.gps):
-                if not gp.is_trained_once:
-                    continue
-                if not hasattr(gp.buffer, "get_velocity_bounds_fast"):
-                    continue
-                v_min, v_max = gp.buffer.get_velocity_bounds_fast()
-                if v_min is None or v_max is None:
-                    continue
-                span = max(float(v_max) - float(v_min), 1e-6)
-                margin = margin_ratio * span
-                lower = float(v_min) - margin
-                upper = float(v_max) + margin
-                original = clamped_query[:, i].copy()
-                clamped_query[:, i] = np.clip(original, lower, upper)
-                out_of_range_count += int(np.sum(np.abs(clamped_query[:, i] - original) > 1e-12))
+        query_for_predict = np.array(query_arr, copy=True)
 
         if self.predict_cache_enabled:
             cached_query = self._predict_cache.get("query")
@@ -840,21 +827,12 @@ class IncrementalGPManager:
                 and cached_vars is not None
                 and int(self._predict_cache.get("model_version", -1)) == int(self._model_version)
                 and bool(self._predict_cache.get("need_variance", False)) == bool(need_variance)
-                and cached_query.shape == clamped_query.shape
+                and cached_query.shape == query_for_predict.shape
             ):
-                max_diff = float(np.max(np.abs(cached_query - clamped_query))) if clamped_query.size else 0.0
+                max_diff = float(np.max(np.abs(cached_query - query_for_predict))) if query_for_predict.size else 0.0
                 if max_diff <= max(0.0, float(self.predict_cache_tolerance)):
                     self._runtime_stats["predict_calls"] += 1
                     self._runtime_stats["predict_cache_hits"] += 1
-                    self._runtime_stats["query_out_of_range_ratio_last"] = float(
-                        out_of_range_count / max(total_query_count, 1)
-                    )
-                    self._query_out_of_range_samples += 1
-                    prev_avg = float(self._runtime_stats.get("query_out_of_range_ratio_mean", 0.0))
-                    k = float(self._query_out_of_range_samples)
-                    self._runtime_stats["query_out_of_range_ratio_mean"] = prev_avg + (
-                        self._runtime_stats["query_out_of_range_ratio_last"] - prev_avg
-                    ) / max(k, 1.0)
                     return np.array(cached_means, copy=True), np.array(cached_vars, copy=True)
 
         for i, gp in enumerate(self.gps):
@@ -867,7 +845,7 @@ class IncrementalGPManager:
             
             v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
             
-            v_query = np.atleast_1d(clamped_query[:, i])
+            v_query = np.atleast_1d(query_for_predict[:, i])
             if v_query.size == 0: 
                 continue
             
@@ -912,18 +890,12 @@ class IncrementalGPManager:
 
         self._runtime_stats["predict_calls"] += 1
         self._runtime_stats["gp_predict_ms"] += (time.perf_counter() - predict_start) * 1000.0
-        out_ratio = float(out_of_range_count / max(total_query_count, 1))
-        self._runtime_stats["query_out_of_range_ratio_last"] = out_ratio
-        self._query_out_of_range_samples += 1
-        prev_avg = float(self._runtime_stats.get("query_out_of_range_ratio_mean", 0.0))
-        k = float(self._query_out_of_range_samples)
-        self._runtime_stats["query_out_of_range_ratio_mean"] = prev_avg + (out_ratio - prev_avg) / max(k, 1.0)
 
         if self.predict_cache_enabled:
             self._predict_cache = {
                 "model_version": int(self._model_version),
                 "need_variance": bool(need_variance),
-                "query": np.array(clamped_query, copy=True),
+                "query": np.array(query_for_predict, copy=True),
                 "means": np.array(means, copy=True),
                 "vars": np.array(variances, copy=True),
             }
@@ -941,10 +913,12 @@ class IncrementalGPManager:
             "buffer_update_ms": float(self._runtime_stats.get("buffer_update_ms", 0.0)),
             "queue_overhead_ms": float(self._runtime_stats.get("queue_overhead_ms", 0.0)),
             "full_merge_calls": float(self._runtime_stats.get("full_merge_calls", 0)),
-            "query_out_of_range_ratio_last": float(self._runtime_stats.get("query_out_of_range_ratio_last", 0.0)),
-            "query_out_of_range_ratio_mean": float(self._runtime_stats.get("query_out_of_range_ratio_mean", 0.0)),
             "selected_size_mean_last": float(self._runtime_stats.get("selected_size_mean_last", 0.0)),
             "unique_ratio_mean_last": float(self._runtime_stats.get("unique_ratio_mean_last", 0.0)),
+            "insert_accept_ratio_mean_last": float(self._runtime_stats.get("insert_accept_ratio_mean_last", 0.0)),
+            "insert_skip_ratio_mean_last": float(self._runtime_stats.get("insert_skip_ratio_mean_last", 0.0)),
+            "prune_old_count_mean_last": float(self._runtime_stats.get("prune_old_count_mean_last", 0.0)),
+            "flip_delete_count_mean_last": float(self._runtime_stats.get("flip_delete_count_mean_last", 0.0)),
             "predict_cache_hits": float(self._runtime_stats.get("predict_cache_hits", 0.0)),
         }
         if reset:
@@ -955,13 +929,14 @@ class IncrementalGPManager:
                 "buffer_update_ms": 0.0,
                 "queue_overhead_ms": 0.0,
                 "full_merge_calls": 0,
-                "query_out_of_range_ratio_last": 0.0,
-                "query_out_of_range_ratio_mean": 0.0,
                 "selected_size_mean_last": 0.0,
                 "unique_ratio_mean_last": 0.0,
+                "insert_accept_ratio_mean_last": 0.0,
+                "insert_skip_ratio_mean_last": 0.0,
+                "prune_old_count_mean_last": 0.0,
+                "flip_delete_count_mean_last": 0.0,
                 "predict_cache_hits": 0.0,
             })
-            self._query_out_of_range_samples = 0
         return stats
 
     # =================================================================================
@@ -1091,16 +1066,16 @@ if __name__ == '__main__':
     # 定义GP管理器和仿真的配置
     final_config = {
         'num_dimensions': 3,
-        'main_process_device': 'cuda',
-        'worker_device_str': 'cuda',
-        'buffer_level_capacities': [10, 15, 20], # 三层缓冲区容量
-        'buffer_level_sparsity': [1, 2, 5],      # 稀疏因子：每1/2/5个点存入
+        'main_process_device': 'cpu',
+        'worker_device_str': 'cpu',
+        'buffer_max_size': 20,                   # 三级缓存总容量上限
+        'buffer_insert_min_delta_v': 0.15,       # 入样门控阈值
+        'buffer_prune_old_delta_v': 0.15,        # 旧近邻剔除阈值
+        'buffer_flip_prune_limit': 3,            # 单次方向反转删旧点上限
         'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
-        'min_points_for_ema': 30,                # 启用EMA所需的最小数据点
         'refit_hyperparams_interval': 20,       # 触发再训练的更新次数间隔
         'worker_train_iters': 70,               # 后台训练迭代次数
         'worker_lr': 0.03,                       # 训练学习率
-        'ema_alpha': 0.05,                       # EMA平滑系数
     }
     
     manager = IncrementalGPManager(config=final_config)

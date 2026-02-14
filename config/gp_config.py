@@ -1,8 +1,12 @@
 """
-Centralized GP configuration for MPC-UAV.
-MPC-UAV 的集中式 GP 配置。
+MPC-UAV 高斯过程配置中心。
 
-本文件统一管理在线/离线 GP 的默认参数，避免不同实验脚本之间出现参数漂移。
+说明：
+1) 统一在线/离线 GP 的默认参数，避免实验脚本各自硬编码。
+2) 当前在线缓冲策略采用“简化版多级 IVS”：
+   - 两阈值去密集（入样阈值、旧近邻剔除阈值）
+   - 方向反转时按上限删除最旧点
+3) 所有实验脚本应通过 build_online_gp_config() 构造配置。
 """
 
 from dataclasses import dataclass, field, replace
@@ -11,10 +15,7 @@ from typing import List
 
 @dataclass
 class GPModelParams:
-    """
-    Standardized parameters for Gaussian Process models.
-    高斯过程模型的标准化参数。
-    """
+    """高斯过程模型参数统一结构。"""
 
     length_scale: List[float]  # 各输入维度长度尺度
     signal_variance: float  # 信号方差
@@ -24,13 +25,7 @@ class GPModelParams:
 
 @dataclass
 class OnlineGPConfig:
-    """
-    在线（增量）GP配置。
-
-    说明：
-    1) 该配置会被 `IncrementalGPManager` 直接消费。
-    2) 所有实验脚本应通过 `build_online_gp_config()` 构造，避免脚本各自硬编码。
-    """
+    """在线（增量）GP配置。"""
 
     # =============================
     # 设备与维度
@@ -40,60 +35,34 @@ class OnlineGPConfig:
     worker_device_str: str = "cpu"  # 后台训练设备（多进程建议CPU）
 
     # =============================
-    # 缓冲区基础参数
+    # 缓冲区核心参数（简化版）
     # =============================
-    buffer_max_size: int = 13  # 训练集目标上限N（C7调优结果：兼顾RMSE与时延）
-    novelty_weight: float = 0.55  # 新颖性权重（提升稀疏区覆盖，降低外推误差）
-    recency_weight: float = 0.45  # 时效性权重（与新颖性配平，避免过度追新）
-    recency_decay_rate: float = 0.10  # 时效性指数衰减率（减缓旧点失效，提升稳态拟合）
-    buffer_min_distance: float = 0.02  # 速度邻域半径（去重/密度评估）
-
-    # =============================
-    # 多级缓存结构参数
-    # =============================
-    buffer_level_capacities: List[int] = field(default_factory=lambda: [12, 5, 3])
-    buffer_level_sparsity: List[int] = field(default_factory=lambda: [1, 2, 5])
-
-    # =============================
-    # IVS评分与聚簇平滑参数
-    # =============================
-    cluster_anchor_window: int = 6  # 主簇锚点窗口（从L0最近点中取中位）
-    cluster_gap_factor: float = 2.5  # 切簇间距倍率
-    out_cluster_penalty: float = 0.08  # 非主簇惩罚强度（温和）
-    target_size_slack: int = 2  # 训练集弹性下界：N-slack..N（适度放松容量以换时延）
-
-    # =============================
-    # 近邻快速更新与局部重复控制
-    # =============================
-    buffer_local_dup_cap: int = 2  # 同一速度邻域允许的最大重复样本数
-    buffer_close_update_v_ratio: float = 0.3  # 近邻覆盖速度阈值系数
-    buffer_close_update_y_threshold: float = 0.3  # 近邻覆盖残差阈值
-
-    # =============================
-    # IVS全量/增量刷新控制
-    # =============================
-    ivs_full_rescore_period: int = 4  # 每插入多少次触发一次全量重评分（降低重评分频率）
-    ivs_coverage_bins: int = 10  # 覆盖优先分箱数
-    ivs_min_cover_ratio: float = 0.55  # 覆盖优先最小比例
+    buffer_max_size: int = 15  # 训练集总上限 N（三级总容量严格等于 N）
+    buffer_insert_min_delta_v: float = 0.15  # 与 L0 最新点速度差小于该阈值则跳过入样
+    buffer_prune_old_delta_v: float = 0.05  # 新点入样后，删除所有更旧且速度差小于该阈值的点
+    buffer_flip_prune_limit: int = 2  # 单次插入最多循环执行“方向反转删最旧点”的次数
+    buffer_level_capacities: List[int] = field(default_factory=lambda: [9, 4, 2])  # 三级缓存容量（总和建议等于 buffer_max_size）
+    buffer_level_sparsity: List[int] = field(default_factory=lambda: [1, 2, 5])  # 三级稀疏采样因子（L0/L1/L2）
+    novelty_weight: float = 0.55  # 新颖性权重（越大越偏向覆盖稀疏速度区域）
+    recency_weight: float = 0.45  # 时效性权重（越大越偏向保留新样本）
+    recency_decay_rate: float = 0.15  # 时效性指数衰减系数（越大衰减越快）
 
     # =============================
     # 在线预测性能参数
     # =============================
-    ivs_query_clamp_margin: float = 0.10  # 查询软夹紧边界比例
-    online_predict_need_variance_when_alpha_zero: bool = False  # alpha=0时默认跳过方差
-    force_cpu_predict: bool = True  # 强制CPU推理，降低GPU初始化/切换开销
+    force_cpu_predict: bool = True  # 强制 CPU 推理，避免小模型的 GPU 切换开销
     predict_use_likelihood_variance: bool = False  # 方差是否包含观测噪声项
     predict_cache_enabled: bool = True  # 启用查询缓存
-    predict_cache_tolerance: float = 0.16  # 查询缓存触发阈值（在不明显伤精度前提下进一步提高命中率）
-    torch_num_threads: int = 1  # Torch线程数（小模型通常1更稳）
+    predict_cache_tolerance: float = 0.16  # 查询缓存触发阈值
+    torch_num_threads: int = 1  # Torch 线程数（小模型常用 1）
 
     # =============================
     # 在线训练触发参数
     # =============================
-    error_threshold: float = 0.14  # 误差触发阈值（减小线程训练抖动）
-    min_points_for_initial_train: int = 9  # 首次训练最小样本数（避免大于缓冲上限导致强制截断）
-    refit_hyperparams_interval: int = 24  # 定期重训间隔（按数据更新计）
-    worker_train_iters: int = 8  # 后台训练迭代数（降低控制回路受后台训练干扰）
+    error_threshold: float = 1.4  # 误差触发阈值
+    min_points_for_initial_train: int = 10  # 首次训练最小样本数
+    refit_hyperparams_interval: int = 15  # 定期重训间隔（按数据更新计）
+    worker_train_iters: int = 15  # 后台训练迭代数
     worker_lr: float = 0.045  # 后台训练学习率
 
     # =============================
@@ -103,43 +72,32 @@ class OnlineGPConfig:
     gp_matern_nu: float = 2.5  # matern_nu 时使用
 
     # =============================
-    # 混合门控降时延（新增）
+    # 训练触发降频
     # =============================
-    online_update_stride: int = 2  # 每隔多少步检查一次训练触发（2=降时延且精度可接受）
+    online_update_stride: int = 2  # 每隔多少步检查一次训练触发（1=每步）
 
     # =============================
-    # 消融开关
+    # 消融与主流程开关
     # =============================
     buffer_type: str = "ivs"  # ivs/fifo
     async_hp_updates: bool = True  # 异步后台训练
-    variance_scaling_alpha: float = 1.0  # MPC风险缩放项
+    variance_scaling_alpha: float = 1.0  # MPC 风险缩放项
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """转为字典，供现有模块兼容读取。"""
-
         return {
             "num_dimensions": self.num_dimensions,
             "main_process_device": self.main_process_device,
             "worker_device_str": self.worker_device_str,
             "buffer_max_size": self.buffer_max_size,
+            "buffer_insert_min_delta_v": self.buffer_insert_min_delta_v,
+            "buffer_prune_old_delta_v": self.buffer_prune_old_delta_v,
+            "buffer_flip_prune_limit": self.buffer_flip_prune_limit,
+            "buffer_level_capacities": self.buffer_level_capacities,
+            "buffer_level_sparsity": self.buffer_level_sparsity,
             "novelty_weight": self.novelty_weight,
             "recency_weight": self.recency_weight,
             "recency_decay_rate": self.recency_decay_rate,
-            "buffer_min_distance": self.buffer_min_distance,
-            "buffer_level_capacities": self.buffer_level_capacities,
-            "buffer_level_sparsity": self.buffer_level_sparsity,
-            "cluster_anchor_window": self.cluster_anchor_window,
-            "cluster_gap_factor": self.cluster_gap_factor,
-            "out_cluster_penalty": self.out_cluster_penalty,
-            "target_size_slack": self.target_size_slack,
-            "buffer_local_dup_cap": self.buffer_local_dup_cap,
-            "buffer_close_update_v_ratio": self.buffer_close_update_v_ratio,
-            "buffer_close_update_y_threshold": self.buffer_close_update_y_threshold,
-            "ivs_full_rescore_period": self.ivs_full_rescore_period,
-            "ivs_coverage_bins": self.ivs_coverage_bins,
-            "ivs_min_cover_ratio": self.ivs_min_cover_ratio,
-            "ivs_query_clamp_margin": self.ivs_query_clamp_margin,
-            "online_predict_need_variance_when_alpha_zero": self.online_predict_need_variance_when_alpha_zero,
             "force_cpu_predict": self.force_cpu_predict,
             "predict_use_likelihood_variance": self.predict_use_likelihood_variance,
             "predict_cache_enabled": self.predict_cache_enabled,
@@ -161,9 +119,7 @@ class OnlineGPConfig:
 
 @dataclass
 class OfflineGPConfig:
-    """
-    离线 GP 训练配置。
-    """
+    """离线 GP 训练配置。"""
 
     x_features: List[int] = field(default_factory=lambda: [7, 8, 9])  # 输入特征索引
     u_features: List[int] = field(default_factory=list)  # 控制输入特征索引
@@ -185,13 +141,16 @@ def build_online_gp_config(
     *,
     buffer_type: str = "ivs",
     async_hp_updates: bool = True,
-    variance_scaling_alpha: float = 0.0,
+    variance_scaling_alpha: float = 1.0,
     **overrides,
 ) -> OnlineGPConfig:
     """
-    构建统一在线GP配置入口：
+    构建统一在线 GP 配置入口。
+
+    规则：
     1) 总是从 DEFAULT_ONLINE_GP_CONFIG 派生。
-    2) 仅通过显式 overrides 改动差异参数。
+    2) 允许显式覆盖现有字段。
+    3) 对历史旧字段做兼容忽略（打印提示，不抛错）。
     """
 
     cfg = replace(
@@ -200,6 +159,36 @@ def build_online_gp_config(
         async_hp_updates=bool(async_hp_updates),
         variance_scaling_alpha=float(variance_scaling_alpha),
     )
-    if overrides:
-        cfg = replace(cfg, **overrides)
+
+    if not overrides:
+        return cfg
+
+    deprecated_keys = {
+        "cluster_anchor_window",
+        "cluster_gap_factor",
+        "out_cluster_penalty",
+        "target_size_slack",
+        "ivs_coverage_bins",
+        "ivs_min_cover_ratio",
+        "ivs_full_rescore_period",
+        "ivs_query_clamp_margin",
+        "online_predict_need_variance_when_alpha_zero",
+        "buffer_min_distance",
+        "buffer_local_dup_cap",
+        "buffer_close_update_v_ratio",
+        "buffer_close_update_y_threshold",
+    }
+
+    valid_keys = set(OnlineGPConfig.__dataclass_fields__.keys())
+    filtered = {}
+    for key, value in overrides.items():
+        if key in deprecated_keys:
+            print(f"[build_online_gp_config] deprecated override ignored: {key}")
+            continue
+        if key not in valid_keys:
+            raise TypeError(f"Unknown OnlineGPConfig override: {key}")
+        filtered[key] = value
+
+    if filtered:
+        cfg = replace(cfg, **filtered)
     return cfg

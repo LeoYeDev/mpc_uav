@@ -230,13 +230,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     step_metrics_rows = []
     running_err_sum = 0.0
 
-    # variance_scaling_alpha=0 且配置允许时，跳过方差预测以提速。
+    # 方差是否参与在线补偿由 MPC 风险项决定（alpha>0 时启用）。
     alpha = float(getattr(quad_mpc.quad_opt, "variance_scaling_alpha", 0.0))
-    need_variance_for_control = True
-    if online_gp_manager is not None and hasattr(online_gp_manager, "online_predict_need_variance_when_alpha_zero"):
-        allow_skip_var = not bool(online_gp_manager.online_predict_need_variance_when_alpha_zero)
-        if abs(alpha) < 1e-12 and allow_skip_var:
-            need_variance_for_control = False
+    need_variance_for_control = bool(abs(alpha) > 1e-12)
 
     while (time.time() - start_time) < max_simulation_time and current_idx < reference_traj.shape[0]:
         iter_compute_start = time.perf_counter()
@@ -258,7 +254,6 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         # ========================================================================
         online_predictions = None
         online_variances = None
-        query_out_of_range_ratio = 0.0
         predict_call_ms = 0.0
         
         # 在线补偿查询点严格与 MPC 阶段对齐：使用 x_pred[0:N]
@@ -286,15 +281,11 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
             predicted_residuals, predicted_variances = online_gp_manager.predict(
                 effective_query_velocities,
                 need_variance=need_variance_for_control,
-                clamp_extrapolation=True,
+                clamp_extrapolation=False,
             )
             predict_call_ms = (time.perf_counter() - t_predict_start) * 1000.0
             online_predictions = predicted_residuals
             online_variances = predicted_variances if need_variance_for_control else None
-
-            if hasattr(online_gp_manager, "get_runtime_stats"):
-                runtime_snapshot = online_gp_manager.get_runtime_stats(reset=False)
-                query_out_of_range_ratio = float(runtime_snapshot.get("query_out_of_range_ratio_last", 0.0))
         # ========================================================================
 
         # Optimize control input to reach pre-set target
@@ -484,9 +475,6 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
                 selected_size_mean = float(runtime_stats_curr.get("selected_size_mean_last", np.nan))
                 unique_ratio_mean = float(runtime_stats_curr.get("unique_ratio_mean_last", np.nan))
                 full_merge_calls = int(runtime_stats_curr.get("full_merge_calls", 0))
-                query_out_of_range_ratio = float(
-                    runtime_stats_curr.get("query_out_of_range_ratio_last", query_out_of_range_ratio)
-                )
                 runtime_stats_prev = runtime_stats_curr
         # --- END ADDED: Online GP Initialization ---
         post_sim_elapsed = time.perf_counter() - post_sim_start
@@ -513,7 +501,6 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
                 "control_time_ms": float((pre_sim_elapsed + post_sim_elapsed) * 1000.0),
                 "selected_size": float(selected_size_mean),
                 "unique_ratio": float(unique_ratio_mean),
-                "query_out_of_range_ratio": float(query_out_of_range_ratio),
                 "full_merge_calls": int(full_merge_calls),
                 "rmse_running": float(running_rmse),
             })
@@ -537,14 +524,20 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
                 v_arr = np.array([p[0] for p in train_points], dtype=float)
                 diag = gp.buffer.get_diagnostics() if hasattr(gp.buffer, "get_diagnostics") else {}
                 debug_chunks.append(
-                    "d{d}: n={n}, v=[{vmin:.2f},{vmax:.2f}], std={std:.3f}, uniq={uniq:.2f}, cluster={cluster:.2f}".format(
+                    (
+                        "d{d}: n={n}, v=[{vmin:.2f},{vmax:.2f}], std={std:.3f}, uniq={uniq:.2f}, "
+                        "acc={acc:.2f}, skip={skip:.2f}, prune={prune:.0f}, flip={flip:.0f}"
+                    ).format(
                         d=dim_idx,
                         n=len(train_points),
                         vmin=float(np.min(v_arr)),
                         vmax=float(np.max(v_arr)),
                         std=float(np.std(v_arr)),
                         uniq=float(diag.get("unique_ratio", np.nan)),
-                        cluster=float(diag.get("main_cluster_ratio", np.nan)),
+                        acc=float(diag.get("insert_accept_ratio", np.nan)),
+                        skip=float(diag.get("insert_skip_ratio", np.nan)),
+                        prune=float(diag.get("prune_old_count_last", np.nan)),
+                        flip=float(diag.get("flip_delete_count_last", np.nan)),
                     )
                 )
             print(
@@ -603,7 +596,6 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
                     "control_time_ms",
                     "selected_size",
                     "unique_ratio",
-                    "query_out_of_range_ratio",
                     "full_merge_calls",
                     "rmse_running",
                 ],
