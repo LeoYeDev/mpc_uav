@@ -725,12 +725,10 @@ if __name__ == '__main__':
         online_gp_manager = None
         use_online_gp = bool(model_type["model"] and model_type["model"].get("use_online_gp", False))
         if use_online_gp:
+            # 统一从 gp_config 派生，避免在脚本中硬编码在线GP超参数。
+            online_cfg = build_online_gp_config()
             online_gp_manager = IncrementalGPManager(
-                config=build_online_gp_config(
-                    buffer_type='ivs',
-                    async_hp_updates=True,
-                    variance_scaling_alpha=0.0,
-                ).to_dict()
+                config=online_cfg.to_dict()
             )
             print(
                 f"[online-gp] async_enabled={online_gp_manager.async_hp_updates}, "

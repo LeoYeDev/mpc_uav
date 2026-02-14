@@ -38,8 +38,8 @@ class OnlineGPConfig:
     # 缓冲区核心参数（简化版）
     # =============================
     buffer_max_size: int = 15  # 训练集总上限 N（三级总容量严格等于 N）
-    buffer_insert_min_delta_v: float = 0.15  # 与 L0 最新点速度差小于该阈值则跳过入样
-    buffer_prune_old_delta_v: float = 0.05  # 新点入样后，删除所有更旧且速度差小于该阈值的点
+    buffer_insert_min_delta_v: float = 0.15  # 入样二维门控阈值（(v,y)欧式距离，比较新点与L0最新点）
+    buffer_prune_old_delta_v: float = 0.05  # 旧点剔除阈值（仅按横坐标v判断，|v_old-v_new| < 阈值）
     buffer_flip_prune_limit: int = 2  # 单次插入最多循环执行“方向反转删最旧点”的次数
     buffer_level_capacities: List[int] = field(default_factory=lambda: [9, 4, 2])  # 三级缓存容量（总和建议等于 buffer_max_size）
     buffer_level_sparsity: List[int] = field(default_factory=lambda: [1, 2, 5])  # 三级稀疏采样因子（L0/L1/L2）
@@ -59,9 +59,10 @@ class OnlineGPConfig:
     # =============================
     # 在线训练触发参数
     # =============================
-    error_threshold: float = 1.4  # 误差触发阈值
+    error_threshold: float = 14  # 误差触发阈值
     min_points_for_initial_train: int = 10  # 首次训练最小样本数
     refit_hyperparams_interval: int = 15  # 定期重训间隔（按数据更新计）
+    online_update_stride: int = 2  # 每隔多少步检查一次训练触发（1=每步）
     worker_train_iters: int = 15  # 后台训练迭代数
     worker_lr: float = 0.045  # 后台训练学习率
 
@@ -70,11 +71,6 @@ class OnlineGPConfig:
     # =============================
     gp_kernel: str = "rbf"  # rbf/matern12/matern32/matern52/matern_nu
     gp_matern_nu: float = 2.5  # matern_nu 时使用
-
-    # =============================
-    # 训练触发降频
-    # =============================
-    online_update_stride: int = 2  # 每隔多少步检查一次训练触发（1=每步）
 
     # =============================
     # 消融与主流程开关

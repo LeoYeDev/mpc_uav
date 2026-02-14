@@ -67,10 +67,7 @@ def _build_gp_config(method: str, args: argparse.Namespace) -> OnlineGPConfig:
     `config/gp_config.py` 里的 `build_online_gp_config()`（其内部基于默认配置派生）。
     """
     method = method.lower().strip()
-    base = build_online_gp_config(
-        async_hp_updates=bool(args.async_updates),
-        variance_scaling_alpha=0.0,
-    )
+    base = build_online_gp_config(async_hp_updates=bool(args.async_updates))
     if method == "fifo":
         return replace(base, buffer_type="fifo")
     if method == "ivs":

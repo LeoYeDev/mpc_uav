@@ -599,6 +599,7 @@ class IncrementalGPManager:
         for i in range(self.num_dimensions):
             gp = self.gps[i]
             buffer_start = time.perf_counter()
+            # 每个维度独立更新：3 个 SISO 在线 GP 分别使用各自的 (v_i, y_i) 判定与入样。
             gp.add_data_point(new_velocities[i], new_residuals[i], timestamp)
             self._runtime_stats["buffer_update_ms"] += (time.perf_counter() - buffer_start) * 1000.0
             
@@ -1058,26 +1059,23 @@ class IncrementalGPManager:
 # =================================================================================
 if __name__ == '__main__':
     import multiprocessing
+    from config.gp_config import build_online_gp_config
     try:
         multiprocessing.set_start_method("spawn", force=True)
     except (RuntimeError, ValueError):
         pass # 在非Linux系统上或特定环境中可能会失败，属于正常情况
 
-    # 定义GP管理器和仿真的配置
-    final_config = {
-        'num_dimensions': 3,
-        'main_process_device': 'cpu',
-        'worker_device_str': 'cpu',
-        'buffer_max_size': 20,                   # 三级缓存总容量上限
-        'buffer_insert_min_delta_v': 0.15,       # 入样门控阈值
-        'buffer_prune_old_delta_v': 0.15,        # 旧近邻剔除阈值
-        'buffer_flip_prune_limit': 3,            # 单次方向反转删旧点上限
-        'min_points_for_initial_train': 30,      # 触发首次训练的最小数据点
-        'refit_hyperparams_interval': 20,       # 触发再训练的更新次数间隔
-        'worker_train_iters': 70,               # 后台训练迭代次数
-        'worker_lr': 0.03,                       # 训练学习率
-    }
-    
+    # 统一从 gp_config 构造示例配置，避免与实验脚本默认值漂移。
+    final_config = build_online_gp_config(
+        buffer_type='ivs',
+        async_hp_updates=True,
+        buffer_max_size=20,
+        min_points_for_initial_train=20,
+        refit_hyperparams_interval=20,
+        worker_train_iters=70,
+        worker_lr=0.03,
+    ).to_dict()
+
     manager = IncrementalGPManager(config=final_config)
     
     # --- 生成模拟数据 ---

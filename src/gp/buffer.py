@@ -92,8 +92,8 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
     """
     Simplified multi-level IVS buffer (rule-driven):
     1) Keep 3 levels (L0/L1/L2) with fixed sparsity [1, 2, 5].
-    2) New point gating by distance to newest L0 point.
-    3) After insertion, prune all older near-velocity points.
+    2) New point gating by 2D Euclidean distance to newest L0 point: (v, y).
+    3) After insertion, prune all older near points by x-axis distance only: |Δv|.
     4) Direction-flip cleanup removes oldest point iteratively (bounded by limit).
     5) Final training set is merged chronologically and capped at N.
     """
@@ -350,7 +350,10 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
                 accept = True
             elif level0.data:
                 latest = level0.data[-1]
-                accept = bool(abs(v_new - float(latest[0])) >= self.insert_min_delta_v)
+                dv = float(v_new - float(latest[0]))
+                dy = float(y_new - float(latest[1]))
+                dist_2d = float(np.hypot(dv, dy))
+                accept = bool(dist_2d >= self.insert_min_delta_v)
             else:
                 accept = True
 
