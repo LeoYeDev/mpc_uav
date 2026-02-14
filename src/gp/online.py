@@ -15,7 +15,7 @@ import torch
 import gpytorch
 import time
 import numpy as np
-from typing import Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional
 import copy
 from collections import deque
 import matplotlib.pyplot as plt
@@ -28,6 +28,7 @@ import traceback # 用于打印详细的错误信息
 import atexit
 import signal
 import sys
+import threading
 try:
     from linear_operator.utils.errors import NotPSDError
 except Exception:  # pragma: no cover
@@ -203,7 +204,8 @@ class IncrementalGP:
     def __init__(self, dim_idx, config):
         self.dim_idx = dim_idx
         self.config = config
-        self.device = torch.device(config.get('main_process_device', 'cpu'))
+        force_cpu_predict = bool(config.get('force_cpu_predict', True))
+        self.device = torch.device('cpu' if force_cpu_predict else config.get('main_process_device', 'cpu'))
         self.epsilon = 1e-7
         self.kernel_type = str(config.get('gp_kernel', 'rbf'))
         self.matern_nu = float(config.get('gp_matern_nu', 2.5))
@@ -232,6 +234,9 @@ class IncrementalGP:
             local_dup_cap = int(config.get('buffer_local_dup_cap', 4))
             close_update_v_ratio = float(config.get('buffer_close_update_v_ratio', 0.35))
             close_update_y_threshold = float(config.get('buffer_close_update_y_threshold', 0.03))
+            full_rescore_period = int(config.get('ivs_full_rescore_period', 4))
+            coverage_bins = int(config.get('ivs_coverage_bins', 10))
+            min_cover_ratio = float(config.get('ivs_min_cover_ratio', 0.55))
             self.buffer = MultiLevelInformationGainBuffer(
                 max_size=max_size,
                 novelty_weight=novelty_weight,
@@ -247,6 +252,9 @@ class IncrementalGP:
                 local_dup_cap=local_dup_cap,
                 close_update_v_ratio=close_update_v_ratio,
                 close_update_y_threshold=close_update_y_threshold,
+                full_rescore_period=full_rescore_period,
+                coverage_bins=coverage_bins,
+                min_cover_ratio=min_cover_ratio,
             )
 
         # 批量归一化统计量（每次从缓冲区计算，避免EMA漂移）
@@ -285,7 +293,10 @@ class IncrementalGP:
     
     def get_and_normalize_data(self):
         """获取并归一化所有数据。使用批量统计量避免EMA漂移，确保训练和预测一致。"""
-        training_data_raw = self.buffer.get_training_set()
+        if hasattr(self.buffer, "get_training_set_full"):
+            training_data_raw = self.buffer.get_training_set_full()
+        else:
+            training_data_raw = self.buffer.get_training_set()
         if not training_data_raw or len(training_data_raw) < 2: 
             return None, None
         
@@ -321,7 +332,7 @@ class IncrementalGP:
         self.likelihood.cpu()
         state = {'model': self.model.state_dict(), 'likelihood': self.likelihood.state_dict()}
         self.model.to(self.device)
-        self.model.to(self.device)
+        self.likelihood.to(self.device)
         return state
 
     def get_model_params(self) -> GPModelParams:
@@ -396,11 +407,28 @@ class IncrementalGPManager:
     - 提供统一的接口 (`update`, `predict`, `shutdown`) 给外部调用。
     """
     def __init__(self, config: dict):
-        self.config = config
-        self.num_dimensions = config.get('num_dimensions', 3)
-        self.buffer_max_size = int(config.get('buffer_max_size', 30))
-        self.async_hp_updates = bool(config.get('async_hp_updates', True))
-        self.min_points_for_initial_train = int(config.get('min_points_for_initial_train', 50))
+        self.config = dict(config)
+        self.force_cpu_predict = bool(self.config.get('force_cpu_predict', True))
+        if self.force_cpu_predict:
+            self.config['main_process_device'] = 'cpu'
+        self.num_dimensions = self.config.get('num_dimensions', 3)
+        self.buffer_max_size = int(self.config.get('buffer_max_size', 30))
+        self.torch_num_threads = int(self.config.get('torch_num_threads', 0))
+        if self.torch_num_threads > 0:
+            try:
+                torch.set_num_threads(self.torch_num_threads)
+            except Exception as e:
+                print(f"[GPManager] torch.set_num_threads({self.torch_num_threads}) failed: {e}")
+        self.async_hp_updates = bool(self.config.get('async_hp_updates', True))
+        self.ivs_query_clamp_margin = float(self.config.get('ivs_query_clamp_margin', 0.10))
+        self.online_predict_need_variance_when_alpha_zero = bool(
+            self.config.get('online_predict_need_variance_when_alpha_zero', False)
+        )
+        self.predict_use_likelihood_variance = bool(self.config.get('predict_use_likelihood_variance', False))
+        self.predict_cache_enabled = bool(self.config.get('predict_cache_enabled', True))
+        self.predict_cache_tolerance = float(self.config.get('predict_cache_tolerance', 0.05))
+        self.online_update_stride = max(1, int(self.config.get('online_update_stride', 1)))
+        self.min_points_for_initial_train = int(self.config.get('min_points_for_initial_train', 50))
         if self.min_points_for_initial_train > self.buffer_max_size:
             # Avoid a dead zone where online GP can never trigger initial training.
             self.min_points_for_initial_train = max(2, self.buffer_max_size)
@@ -408,14 +436,38 @@ class IncrementalGPManager:
                 f"[GPManager] min_points_for_initial_train exceeds buffer size; "
                 f"clamped to {self.min_points_for_initial_train}."
             )
-        self.gps = [IncrementalGP(i, config) for i in range(self.num_dimensions)]
+        self.gps = [IncrementalGP(i, self.config) for i in range(self.num_dimensions)]
         self._is_shutdown = False
+        self._runtime_stats = {
+            "update_calls": 0,
+            "predict_calls": 0,
+            "gp_predict_ms": 0.0,
+            "buffer_update_ms": 0.0,
+            "queue_overhead_ms": 0.0,
+            "full_merge_calls": 0,
+            "query_out_of_range_ratio_last": 0.0,
+            "query_out_of_range_ratio_mean": 0.0,
+            "selected_size_mean_last": 0.0,
+            "unique_ratio_mean_last": 0.0,
+            "predict_cache_hits": 0.0,
+        }
+        self._query_out_of_range_samples = 0
+        self._update_counter = 0
+        self._model_version = 0
+        self._predict_cache = {
+            "model_version": -1,
+            "need_variance": None,
+            "query": None,
+            "means": None,
+            "vars": None,
+        }
 
         # 当 async_hp_updates=False 时，采用主进程同步训练，避免多进程依赖。
         self.task_queues = []
         self.result_queue = None
         self.stop_event = None
         self.workers = []
+        self._worker_backend = "sync"
 
         # 新增: 用于存储后台训练耗时的列表
         self.training_durations = []
@@ -432,11 +484,11 @@ class IncrementalGPManager:
                 # 启动后台工作进程（静默）
                 for i in range(self.num_dimensions):
                     worker_config = {
-                        'n_iter': config.get('worker_train_iters', 150),
-                        'lr': config.get('worker_lr', 0.01),
-                        'device_str': config.get('worker_device_str', 'cpu'),
-                        'kernel_type': config.get('gp_kernel', 'rbf'),
-                        'matern_nu': config.get('gp_matern_nu', 2.5),
+                        'n_iter': self.config.get('worker_train_iters', 150),
+                        'lr': self.config.get('worker_lr', 0.01),
+                        'device_str': self.config.get('worker_device_str', 'cpu'),
+                        'kernel_type': self.config.get('gp_kernel', 'rbf'),
+                        'matern_nu': self.config.get('gp_matern_nu', 2.5),
                     }
                     worker = Process(
                         target=gp_training_worker,
@@ -445,11 +497,13 @@ class IncrementalGPManager:
                     worker.daemon = True
                     worker.start()
                     self.workers.append(worker)
+                self._worker_backend = "process"
             except Exception as e:
-                # 某些运行环境（例如受限容器）不允许创建进程信号量；自动回退到同步训练。
+                # 某些运行环境（例如受限容器）不允许创建进程信号量；
+                # 优先回退到“线程异步”以避免主循环同步阻塞。
                 print(
                     f"[GPManager] Async workers unavailable ({e}); "
-                    "fallback to synchronous hyperparameter updates."
+                    "fallback to threaded async workers."
                 )
                 for worker in self.workers:
                     try:
@@ -462,7 +516,39 @@ class IncrementalGPManager:
                 self.task_queues = []
                 self.result_queue = None
                 self.stop_event = None
-                self.async_hp_updates = False
+                try:
+                    self.task_queues = [queue.Queue() for _ in range(self.num_dimensions)]
+                    self.result_queue = queue.Queue()
+                    self.stop_event = threading.Event()
+                    for i in range(self.num_dimensions):
+                        worker_config = {
+                            'n_iter': self.config.get('worker_train_iters', 150),
+                            'lr': self.config.get('worker_lr', 0.01),
+                            'device_str': self.config.get('worker_device_str', 'cpu'),
+                            'kernel_type': self.config.get('gp_kernel', 'rbf'),
+                            'matern_nu': self.config.get('gp_matern_nu', 2.5),
+                        }
+                        worker = threading.Thread(
+                            target=gp_training_worker,
+                            args=(self.task_queues[i], self.result_queue, self.stop_event, worker_config, i),
+                            daemon=True,
+                            name=f"gp-worker-dim-{i}",
+                        )
+                        worker.start()
+                        self.workers.append(worker)
+                    self.async_hp_updates = True
+                    self._worker_backend = "thread"
+                except Exception as e_thread:
+                    print(
+                        f"[GPManager] Threaded async workers unavailable ({e_thread}); "
+                        "fallback to synchronous hyperparameter updates."
+                    )
+                    self.workers = []
+                    self.task_queues = []
+                    self.result_queue = None
+                    self.stop_event = None
+                    self.async_hp_updates = False
+                    self._worker_backend = "sync"
         
         # 注册自动清理
         atexit.register(self.shutdown)
@@ -519,16 +605,34 @@ class IncrementalGPManager:
         """
         if timestamp is None:
             timestamp = time.time()
+        self._update_counter += 1
+        do_train_check = (self._update_counter % self.online_update_stride) == 0
+
+        selected_sizes = []
+        unique_ratios = []
 
         for i in range(self.num_dimensions):
             gp = self.gps[i]
+            buffer_start = time.perf_counter()
             gp.add_data_point(new_velocities[i], new_residuals[i], timestamp)
+            self._runtime_stats["buffer_update_ms"] += (time.perf_counter() - buffer_start) * 1000.0
             
             if gp.is_training_in_progress: 
+                diag_fast = gp.buffer.get_diagnostics_fast() if hasattr(gp.buffer, "get_diagnostics_fast") else {}
+                selected_sizes.append(float(diag_fast.get("selected_size", gp.buffer.get_effective_size_fast())))
+                unique_ratios.append(float(diag_fast.get("unique_ratio", 1.0)))
                 continue
             
-            # 检查是否满足触发训练的条件
-            num_training_points = len(gp.buffer.get_training_set())
+            # 检查是否满足触发训练的条件（按 online_update_stride 降频）
+            if hasattr(gp.buffer, "get_effective_size_fast"):
+                num_training_points = int(gp.buffer.get_effective_size_fast())
+            else:
+                num_training_points = len(gp.buffer.get_training_set())
+            if not do_train_check:
+                diag_fast = gp.buffer.get_diagnostics_fast() if hasattr(gp.buffer, "get_diagnostics_fast") else {}
+                selected_sizes.append(float(diag_fast.get("selected_size", num_training_points)))
+                unique_ratios.append(float(diag_fast.get("unique_ratio", 1.0)))
+                continue
             should_trigger = False
             # 条件1: 首次训练
             if not gp.is_trained_once and num_training_points >= self.min_points_for_initial_train:
@@ -546,7 +650,9 @@ class IncrementalGPManager:
                     if self.async_hp_updates:
                         current_state = gp.get_current_state_for_worker()
                         task = (train_x, train_y, current_state)
+                        q_start = time.perf_counter()
                         self.task_queues[i].put(task)
+                        self._runtime_stats["queue_overhead_ms"] += (time.perf_counter() - q_start) * 1000.0
                         gp.is_training_in_progress = True
                     else:
                         gp.is_training_in_progress = True
@@ -556,23 +662,45 @@ class IncrementalGPManager:
                             gp.last_training_history = history
                             gp.updates_since_last_train = 0
                             gp.is_trained_once = True
+                            self._model_version += 1
                         except Exception as e:
                             print(f"[GPManager] Synchronous training failed on dim {i}: {e}")
                             traceback.print_exc()
                         finally:
                             gp.is_training_in_progress = False
 
+            diag_fast = gp.buffer.get_diagnostics_fast() if hasattr(gp.buffer, "get_diagnostics_fast") else {}
+            selected_sizes.append(float(diag_fast.get("selected_size", num_training_points)))
+            unique_ratios.append(float(diag_fast.get("unique_ratio", 1.0)))
+
+        self._runtime_stats["update_calls"] += 1
+        if selected_sizes:
+            self._runtime_stats["selected_size_mean_last"] = float(np.mean(selected_sizes))
+        if unique_ratios:
+            self._runtime_stats["unique_ratio_mean_last"] = float(np.mean(unique_ratios))
+
+        self._runtime_stats["full_merge_calls"] = int(
+            sum(
+                gp.buffer.get_full_merge_call_count() if hasattr(gp.buffer, "get_full_merge_call_count") else 0
+                for gp in self.gps
+            )
+        )
+
     def poll_for_results(self):
         """非阻塞地检查并应用已完成的训练结果。"""
         if not self.async_hp_updates or self.result_queue is None:
             return
-        try:
-            dim_idx, new_state_dict, history, duration = self.result_queue.get_nowait()
-            # 新增: 记录训练时长
-            self.training_durations.append(duration)
-            self.gps[dim_idx].load_new_state_from_worker(new_state_dict, history)
-        except queue.Empty:
-            pass # 队列为空是正常情况
+        while True:
+            try:
+                q_start = time.perf_counter()
+                dim_idx, new_state_dict, history, duration = self.result_queue.get_nowait()
+                self._runtime_stats["queue_overhead_ms"] += (time.perf_counter() - q_start) * 1000.0
+                # 新增: 记录训练时长
+                self.training_durations.append(duration)
+                self.gps[dim_idx].load_new_state_from_worker(new_state_dict, history)
+                self._model_version += 1
+            except queue.Empty:
+                break  # 队列为空是正常情况
 
     def shutdown(self):
         """优雅地关闭所有后台工作进程。"""
@@ -582,7 +710,7 @@ class IncrementalGPManager:
         if not self.async_hp_updates:
             return
 
-        print("\n gracefully shutting down all background worker processes...")
+        print("\n gracefully shutting down all background workers...")
         if self.stop_event is not None:
             self.stop_event.set()
         for q in self.task_queues:
@@ -595,7 +723,7 @@ class IncrementalGPManager:
         for worker in self.workers:
             try:
                 worker.join(timeout=2.0)
-                if worker.is_alive():
+                if self._worker_backend == "process" and worker.is_alive():
                     worker.terminate()
             except Exception:
                 pass
@@ -628,8 +756,36 @@ class IncrementalGPManager:
        
        # 重置性能统计列表
        self.training_durations = [] 
+       self._runtime_stats.update({
+           "update_calls": 0,
+           "predict_calls": 0,
+           "gp_predict_ms": 0.0,
+           "buffer_update_ms": 0.0,
+           "queue_overhead_ms": 0.0,
+           "full_merge_calls": 0,
+           "query_out_of_range_ratio_last": 0.0,
+           "query_out_of_range_ratio_mean": 0.0,
+           "selected_size_mean_last": 0.0,
+           "unique_ratio_mean_last": 0.0,
+           "predict_cache_hits": 0.0,
+       })
+       self._query_out_of_range_samples = 0
+       self._update_counter = 0
+       self._model_version = 0
+       self._predict_cache = {
+           "model_version": -1,
+           "need_variance": None,
+           "query": None,
+           "means": None,
+           "vars": None,
+       }
 
-    def predict(self, query_velocities: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(
+        self,
+        query_velocities: np.ndarray,
+        need_variance: bool = True,
+        clamp_extrapolation: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         使用主进程中的实时模型进行预测。
         
@@ -641,8 +797,65 @@ class IncrementalGPManager:
                 - means: 预测均值 (n_samples, num_dimensions)
                 - variances: 预测方差 (n_samples, num_dimensions)
         """
-        means = np.zeros((query_velocities.shape[0], self.num_dimensions), dtype=float)
+        query_arr = np.asarray(query_velocities, dtype=float)
+        if query_arr.ndim != 2 or query_arr.shape[1] != self.num_dimensions:
+            raise ValueError(
+                f"query_velocities must have shape (n_samples, {self.num_dimensions}), "
+                f"got {query_arr.shape}"
+            )
+
+        predict_start = time.perf_counter()
+        means = np.zeros((query_arr.shape[0], self.num_dimensions), dtype=float)
         variances = np.ones_like(means, dtype=float)
+        clamped_query = np.array(query_arr, copy=True)
+
+        out_of_range_count = 0
+        total_query_count = int(np.prod(clamped_query.shape))
+
+        if clamp_extrapolation and clamped_query.size > 0:
+            margin_ratio = max(0.0, float(self.ivs_query_clamp_margin))
+            for i, gp in enumerate(self.gps):
+                if not gp.is_trained_once:
+                    continue
+                if not hasattr(gp.buffer, "get_velocity_bounds_fast"):
+                    continue
+                v_min, v_max = gp.buffer.get_velocity_bounds_fast()
+                if v_min is None or v_max is None:
+                    continue
+                span = max(float(v_max) - float(v_min), 1e-6)
+                margin = margin_ratio * span
+                lower = float(v_min) - margin
+                upper = float(v_max) + margin
+                original = clamped_query[:, i].copy()
+                clamped_query[:, i] = np.clip(original, lower, upper)
+                out_of_range_count += int(np.sum(np.abs(clamped_query[:, i] - original) > 1e-12))
+
+        if self.predict_cache_enabled:
+            cached_query = self._predict_cache.get("query")
+            cached_means = self._predict_cache.get("means")
+            cached_vars = self._predict_cache.get("vars")
+            if (
+                cached_query is not None
+                and cached_means is not None
+                and cached_vars is not None
+                and int(self._predict_cache.get("model_version", -1)) == int(self._model_version)
+                and bool(self._predict_cache.get("need_variance", False)) == bool(need_variance)
+                and cached_query.shape == clamped_query.shape
+            ):
+                max_diff = float(np.max(np.abs(cached_query - clamped_query))) if clamped_query.size else 0.0
+                if max_diff <= max(0.0, float(self.predict_cache_tolerance)):
+                    self._runtime_stats["predict_calls"] += 1
+                    self._runtime_stats["predict_cache_hits"] += 1
+                    self._runtime_stats["query_out_of_range_ratio_last"] = float(
+                        out_of_range_count / max(total_query_count, 1)
+                    )
+                    self._query_out_of_range_samples += 1
+                    prev_avg = float(self._runtime_stats.get("query_out_of_range_ratio_mean", 0.0))
+                    k = float(self._query_out_of_range_samples)
+                    self._runtime_stats["query_out_of_range_ratio_mean"] = prev_avg + (
+                        self._runtime_stats["query_out_of_range_ratio_last"] - prev_avg
+                    ) / max(k, 1.0)
+                    return np.array(cached_means, copy=True), np.array(cached_vars, copy=True)
 
         for i, gp in enumerate(self.gps):
             if not gp.is_trained_once: 
@@ -654,22 +867,36 @@ class IncrementalGPManager:
             
             v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
             
-            v_query = np.atleast_1d(query_velocities[:, i])
+            v_query = np.atleast_1d(clamped_query[:, i])
             if v_query.size == 0: 
                 continue
             
             # 使用缓存的批量统计量进行归一化（与训练一致）
-            v_query_norm = (v_query - v_mean) / v_std
+            v_query_norm = np.asarray((v_query - v_mean) / v_std, dtype=np.float32)
             model_dtype = next(gp.model.parameters()).dtype
-            v_query_torch = torch.tensor(v_query_norm, device=gp.device, dtype=model_dtype).view(-1, 1)
-            
-            gp.model.eval()
-            gp.likelihood.eval()
+            v_query_torch = torch.from_numpy(v_query_norm).to(device=gp.device, dtype=model_dtype).view(-1, 1)
+
+            if gp.model.training:
+                gp.model.eval()
+            if gp.likelihood.training:
+                gp.likelihood.eval()
             try:
-                with torch.no_grad(), gpytorch.settings.fast_pred_var(), gpytorch.settings.cholesky_jitter(1e-3):
-                    preds = gp.likelihood(gp.model(v_query_torch))
-                    mean_norm = preds.mean.cpu().numpy()
-                    var_norm = preds.variance.cpu().numpy()
+                if need_variance:
+                    # 控制环路只关心“红色预测点”的方差，使用后验方差快速路径。
+                    with torch.inference_mode(), gpytorch.settings.fast_pred_var(), gpytorch.settings.cholesky_jitter(1e-3):
+                        posterior = gp.model(v_query_torch)
+                        if self.predict_use_likelihood_variance:
+                            preds = gp.likelihood(posterior)
+                            mean_norm = preds.mean.cpu().numpy()
+                            var_norm = preds.variance.cpu().numpy()
+                        else:
+                            mean_norm = posterior.mean.cpu().numpy()
+                            var_norm = posterior.variance.cpu().numpy()
+                else:
+                    with torch.inference_mode(), gpytorch.settings.cholesky_jitter(1e-3):
+                        posterior = gp.model(v_query_torch)
+                        mean_norm = posterior.mean.cpu().numpy()
+                        var_norm = np.ones_like(mean_norm, dtype=float)
             except (RuntimeError, NotPSDError) as e:
                 # 数值异常时安全降级：当前维度本步不注入在线GP修正，等待后续重训练恢复。
                 print(f"[GPManager] Predict failed on dim {i}, skip this step: {e}")
@@ -678,9 +905,64 @@ class IncrementalGPManager:
 
             # 反归一化
             means[:, i] = mean_norm * r_std + r_mean
-            variances[:, i] = var_norm * (r_std ** 2)
-            
+            if need_variance:
+                variances[:, i] = var_norm * (r_std ** 2)
+            else:
+                variances[:, i] = 1.0
+
+        self._runtime_stats["predict_calls"] += 1
+        self._runtime_stats["gp_predict_ms"] += (time.perf_counter() - predict_start) * 1000.0
+        out_ratio = float(out_of_range_count / max(total_query_count, 1))
+        self._runtime_stats["query_out_of_range_ratio_last"] = out_ratio
+        self._query_out_of_range_samples += 1
+        prev_avg = float(self._runtime_stats.get("query_out_of_range_ratio_mean", 0.0))
+        k = float(self._query_out_of_range_samples)
+        self._runtime_stats["query_out_of_range_ratio_mean"] = prev_avg + (out_ratio - prev_avg) / max(k, 1.0)
+
+        if self.predict_cache_enabled:
+            self._predict_cache = {
+                "model_version": int(self._model_version),
+                "need_variance": bool(need_variance),
+                "query": np.array(clamped_query, copy=True),
+                "means": np.array(means, copy=True),
+                "vars": np.array(variances, copy=True),
+            }
+
         return means, np.maximum(variances, 1e-9)
+
+    def get_runtime_stats(self, reset: bool = False) -> Dict[str, float]:
+        """
+        获取在线 GP 运行时统计信息。
+        """
+        stats = {
+            "update_calls": float(self._runtime_stats.get("update_calls", 0)),
+            "predict_calls": float(self._runtime_stats.get("predict_calls", 0)),
+            "gp_predict_ms": float(self._runtime_stats.get("gp_predict_ms", 0.0)),
+            "buffer_update_ms": float(self._runtime_stats.get("buffer_update_ms", 0.0)),
+            "queue_overhead_ms": float(self._runtime_stats.get("queue_overhead_ms", 0.0)),
+            "full_merge_calls": float(self._runtime_stats.get("full_merge_calls", 0)),
+            "query_out_of_range_ratio_last": float(self._runtime_stats.get("query_out_of_range_ratio_last", 0.0)),
+            "query_out_of_range_ratio_mean": float(self._runtime_stats.get("query_out_of_range_ratio_mean", 0.0)),
+            "selected_size_mean_last": float(self._runtime_stats.get("selected_size_mean_last", 0.0)),
+            "unique_ratio_mean_last": float(self._runtime_stats.get("unique_ratio_mean_last", 0.0)),
+            "predict_cache_hits": float(self._runtime_stats.get("predict_cache_hits", 0.0)),
+        }
+        if reset:
+            self._runtime_stats.update({
+                "update_calls": 0,
+                "predict_calls": 0,
+                "gp_predict_ms": 0.0,
+                "buffer_update_ms": 0.0,
+                "queue_overhead_ms": 0.0,
+                "full_merge_calls": 0,
+                "query_out_of_range_ratio_last": 0.0,
+                "query_out_of_range_ratio_mean": 0.0,
+                "selected_size_mean_last": 0.0,
+                "unique_ratio_mean_last": 0.0,
+                "predict_cache_hits": 0.0,
+            })
+            self._query_out_of_range_samples = 0
+        return stats
 
     # =================================================================================
     # 可视化部分 (美化和改进)
@@ -723,7 +1005,18 @@ class IncrementalGPManager:
             v_range = np.linspace(v_all_data.min(), v_all_data.max(), 200)
             query_points = np.zeros((200, self.num_dimensions))
             for j in range(self.num_dimensions):
-                query_points[:, j] = v_range if i == j else self.gps[j].v_mean_ema
+                if i == j:
+                    query_points[:, j] = v_range
+                    continue
+                gp_j = self.gps[j]
+                default_center = 0.0
+                if gp_j._cached_norm_stats is not None:
+                    default_center = float(gp_j._cached_norm_stats[0])  # v_mean
+                else:
+                    train_set_j = gp_j.buffer.get_training_set()
+                    if len(train_set_j) > 0:
+                        default_center = float(np.mean([p[0] for p in train_set_j]))
+                query_points[:, j] = default_center
 
             pred_mean, pred_var = self.predict(query_points)
             pred_std = np.sqrt(pred_var[:, i])

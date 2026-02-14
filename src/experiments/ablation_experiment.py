@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from dataclasses import replace
 
 from config.configuration_parameters import SimpleSimConfig
-from config.gp_config import DEFAULT_ONLINE_GP_CONFIG
+from config.gp_config import build_online_gp_config
 from config.paths import DEFAULT_MODEL_VERSION, DEFAULT_MODEL_NAME
 
 import warnings
@@ -44,13 +44,16 @@ def get_ablation_configs(preset="baseline"):
     Focused configs:
     1) FIFO
     2) IVS (default weights)
-    3) IVS with novelty_weight=0 (pure recency test)
 
-    All use alpha=0 (full GP trust) to remove variance-scaling effects.
+    All use alpha=0 (full GP trust) to isolate data management effects.
     """
-    # 统一从集中配置派生，确保与 online gp/buffer 模块保持同步。
-    base_gp_config = replace(DEFAULT_ONLINE_GP_CONFIG)
     alpha = 0.0
+    # 统一从集中配置派生，确保与 online gp/buffer 模块保持同步。
+    base_gp_config = build_online_gp_config(
+        buffer_type='ivs',
+        async_hp_updates=True,
+        variance_scaling_alpha=alpha,
+    )
 
     if preset == "contrast":
         # Controlled stress preset: keep both methods trainable while
@@ -58,9 +61,9 @@ def get_ablation_configs(preset="baseline"):
         common = dict(
             buffer_max_size=12,
             min_points_for_initial_train=8,  # must stay <= buffer size
-            refit_hyperparams_interval=6,
-            worker_train_iters=24,
-            recency_decay_rate=0.12,
+            refit_hyperparams_interval=12,
+            worker_train_iters=12,
+            recency_decay_rate=0.10,
         )
         fifo_gp = replace(
             base_gp_config,
@@ -72,21 +75,16 @@ def get_ablation_configs(preset="baseline"):
             base_gp_config,
             buffer_type='ivs',
             variance_scaling_alpha=alpha,
-            novelty_weight=0.58,
-            recency_weight=0.42,
-            buffer_min_distance=0.028,
-            ivs_multilevel=True,
+            novelty_weight=0.45,
+            recency_weight=0.55,
+            buffer_min_distance=0.02,
             buffer_level_capacities=[7, 3, 2],
             buffer_level_sparsity=[1, 2, 5],
             buffer_local_dup_cap=3,
             buffer_close_update_v_ratio=0.25,
             buffer_close_update_y_threshold=0.025,
+            out_cluster_penalty=0.08,
             **common,
-        )
-        ivs_novelty0_gp = replace(
-            ivs_gp,
-            novelty_weight=0.0,
-            recency_weight=1.0,
         )
     else:
         fifo_gp = replace(
@@ -97,13 +95,6 @@ def get_ablation_configs(preset="baseline"):
         ivs_gp = replace(
             base_gp_config,
             buffer_type='ivs',
-            variance_scaling_alpha=alpha,
-        )
-        ivs_novelty0_gp = replace(
-            base_gp_config,
-            buffer_type='ivs',
-            novelty_weight=0.0,
-            recency_weight=1.0,
             variance_scaling_alpha=alpha,
         )
 
@@ -120,13 +111,6 @@ def get_ablation_configs(preset="baseline"):
             "use_offline_gp": True,
             "use_online_gp": True,
             "gp_config": ivs_gp,
-            "solver_options": {"variance_scaling_alpha": alpha},
-        },
-        "ar_mpc_ivs_novelty0": {
-            "description": "AR-MPC (IVS novelty=0, alpha=0)",
-            "use_offline_gp": True,
-            "use_online_gp": True,
-            "gp_config": ivs_novelty0_gp,
             "solver_options": {"variance_scaling_alpha": alpha},
         },
     }
@@ -201,7 +185,11 @@ def run_single_ablation(config_name, config, speed=3.0, trajectory_type="random"
         rmse, max_vel, mean_opt_time, _, _, _, *extras = result
         gp_update_time = float(extras[0]) if len(extras) >= 1 else 0.0
         control_time = float(extras[1]) if len(extras) >= 2 else float(mean_opt_time)
-        
+        runtime_details = extras[2] if len(extras) >= 3 and isinstance(extras[2], dict) else {}
+        gp_predict_time = float(runtime_details.get("gp_predict_time", np.nan))
+        buffer_update_time = float(runtime_details.get("buffer_update_time", np.nan))
+        queue_overhead_time = float(runtime_details.get("queue_overhead_time", np.nan))
+
         # Cleanup
         if online_gp_manager:
             online_gp_manager.shutdown()
@@ -212,6 +200,9 @@ def run_single_ablation(config_name, config, speed=3.0, trajectory_type="random"
             "opt_time": mean_opt_time,            # Solve-only latency
             "gp_update_time": gp_update_time,     # Online update/poll overhead
             "control_time": control_time,         # Solve + online overhead
+            "gp_predict_time": gp_predict_time,   # Online prediction overhead
+            "buffer_update_time": buffer_update_time,
+            "queue_overhead_time": queue_overhead_time,
         }
     
     except Exception as e:
@@ -240,7 +231,7 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
         try:
             plt.style.use(style)
             break
-        except:
+        except Exception:
             pass
     
     # Re-enforce font family after style change
@@ -254,11 +245,10 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     # Prepare data
     names = [r['description'] for r in results.values()]
     rmses = [r['rmse'] for r in results.values()]
-    configs = list(results.keys())
-    # Defined colors
-    colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6', '#1ABC9C', '#34495E']
-    
-    # ========== Figure 1: RMSE Bar Chart (Full) ==========
+    ctrl_ms = [float(r.get('control_time', np.nan)) * 1000.0 for r in results.values()]
+    colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12']
+
+    # ========== Figure 1: RMSE Bar Chart ==========
     fig1, ax1 = plt.subplots(figsize=(10, 6))
     bars = ax1.bar(range(len(names)), rmses, color=colors[:len(names)], edgecolor='black', linewidth=1.2)
     
@@ -281,123 +271,27 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
     fig1.savefig(fig1_path, dpi=300, bbox_inches='tight')
     print(f"Saved: {fig1_path}")
     plt.close(fig1)
-    
-    # ========== Figure 1b: Zoomed RMSE Bar Chart (Excluding Nominal & SGP) ==========
-    # Filter for AR-MPC variants to highlight IVS vs FIFO and Alpha sensitivity
-    zoom_keys = [k for k in configs if 'ar_mpc' in k or 'sensitivity' in k]
-    if len(zoom_keys) > 1:
-        zoom_names = [results[k]['description'] for k in zoom_keys]
-        zoom_rmses = [results[k]['rmse'] for k in zoom_keys]
-        
-        # Use a subset of colors
-        zoom_colors = [colors[configs.index(k) % len(colors)] for k in zoom_keys]
-        
-        fig1b, ax1b = plt.subplots(figsize=(8, 5))
-        bars1b = ax1b.bar(range(len(zoom_names)), zoom_rmses, color=zoom_colors, edgecolor='black', linewidth=1.2)
-        
-        ax1b.set_xticks(range(len(zoom_names)))
-        ax1b.set_xticklabels(zoom_names, rotation=30, ha='right', fontsize=10)
-        ax1b.set_ylabel('RMSE (m)', fontsize=12)
-        ax1b.set_title(f'Ablation Detail: AR-MPC Variants (Zoomed)', fontsize=14)
-        
-        # Smart Y-axis limits to highlight differences
-        min_r = min(zoom_rmses)
-        max_r = max(zoom_rmses)
-        margin = (max_r - min_r) * 0.5 if max_r > min_r else 0.005
-        ax1b.set_ylim(max(0, min_r - margin), max_r + margin)
 
-        # Add value labels
-        for bar, rmse in zip(bars1b, zoom_rmses):
-             ax1b.text(bar.get_x() + bar.get_width()/2, bar.get_height() + margin*0.05, 
-                f'{rmse:.4f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
-        
-        ax1b.grid(axis='y', alpha=0.3, which='both')
-        plt.tight_layout()
-        
-        fig1b_path = os.path.join(save_dir, 'ablation_rmse_zoomed.pdf')
-        fig1b.savefig(fig1b_path, dpi=300, bbox_inches='tight')
-        print(f"Saved: {fig1b_path}")
-        plt.close(fig1b)
+    # ========== Figure 2: Control Time Bar Chart ==========
+    fig2, ax2 = plt.subplots(figsize=(10, 5))
+    bars2 = ax2.bar(range(len(names)), ctrl_ms, color=colors[:len(names)], edgecolor='black', linewidth=1.2)
+    ax2.set_xticks(range(len(names)))
+    ax2.set_xticklabels(names, rotation=30, ha='right', fontsize=10)
+    ax2.set_ylabel('Control Compute Time (ms)', fontsize=12)
+    ax2.set_title(f'Latency Comparison (Speed: {speed} m/s)', fontsize=14)
+    if np.isfinite(np.nanmax(ctrl_ms)):
+        ax2.set_ylim(0.0, float(np.nanmax(ctrl_ms)) * 1.2 + 1e-6)
+    for bar, lat in zip(bars2, ctrl_ms):
+        if np.isfinite(lat):
+            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
+                     f'{lat:.2f}', ha='center', va='bottom', fontsize=9)
+    ax2.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
 
-    
-    # ========== Figure 2: Relative Improvement Chart ==========
-    if 'nominal' in results:
-        baseline = results['nominal']['rmse']
-        improvements = [(1 - r['rmse']/baseline) * 100 for r in results.values()]
-        
-        fig2, ax2 = plt.subplots(figsize=(10, 6))
-        bars2 = ax2.bar(range(len(names)), improvements, color=colors[:len(names)], 
-                        edgecolor='black', linewidth=1.2)
-        
-        ax2.set_xticks(range(len(names)))
-        ax2.set_xticklabels(names, rotation=30, ha='right', fontsize=10)
-        ax2.set_ylabel('Improvement over Nominal (%)', fontsize=12)
-        ax2.set_title(f'Relative Improvement by Configuration', fontsize=14)
-        
-        # Add value labels
-        for bar, imp in zip(bars2, improvements):
-            # Place label above bar for positive, below for negative
-            y_pos = bar.get_height() + 1 if imp >= 0 else bar.get_height() - 5
-            va = 'bottom' if imp >= 0 else 'top'
-            ax2.text(bar.get_x() + bar.get_width()/2, y_pos, 
-                    f'{imp:.1f}%', ha='center', va=va, fontsize=9)
-        
-        ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-        ax2.grid(axis='y', alpha=0.3)
-        plt.tight_layout()
-        
-        fig2_path = os.path.join(save_dir, 'ablation_improvement.pdf')
-        fig2.savefig(fig2_path, dpi=300, bbox_inches='tight')
-        print(f"Saved: {fig2_path}")
-        plt.close(fig2)
-    
-    # ========== Figure 3: Alpha Sensitivity Analysis ==========
-    # Filter keys containing 'alpha' or the boundary cases
-    alpha_keys = [k for k in results.keys() if 'alpha' in k or k in ['ar_mpc_no_var', 'ar_mpc']]
-    
-    if len(alpha_keys) > 1:
-        # Extract alpha values and corresponding RMSEs
-        alpha_data = []
-        for name in alpha_keys:
-            rmse = results[name]['rmse']
-            if name == 'ar_mpc_no_var':
-                alpha_data.append((0.0, rmse))
-            elif name == 'ar_mpc':
-                alpha_data.append((1.0, rmse))
-            elif 'sensitivity_alpha_05' in name:
-                alpha_data.append((0.5, rmse))
-            elif 'sensitivity_alpha_20' in name:
-                alpha_data.append((2.0, rmse))
-        
-        if alpha_data:
-            alpha_data.sort(key=lambda x: x[0])
-            alphas, rmse_vals = zip(*alpha_data)
-            
-            fig3, ax3 = plt.subplots(figsize=(8, 5))
-            ax3.plot(alphas, rmse_vals, 'o-', markersize=10, linewidth=2, color='#2E86AB')
-            
-            # Highlight best point
-            min_idx = rmse_vals.index(min(rmse_vals))
-            ax3.scatter([alphas[min_idx]], [min(rmse_vals)], 
-                       s=150, c='#E74C3C', marker='*', zorder=5, label='Best')
-            
-            ax3.set_xlabel('Variance Scaling Alpha', fontsize=12)
-            ax3.set_ylabel('RMSE (m)', fontsize=12)
-            ax3.set_title('Sensitivity Analysis: Variance Scaling Parameter', fontsize=14)
-            # Add zoomed Y-axis to see small differences
-            min_r = min(rmse_vals)
-            max_r = max(rmse_vals)
-            margin = (max_r - min_r) * 0.5 if max_r > min_r else 0.005
-            ax3.set_ylim(max(0, min_r - margin), max_r + margin)
-
-            ax3.grid(True, alpha=0.3)
-            ax3.legend()
-            
-            plt.tight_layout()
-            fig3_path = os.path.join(save_dir, 'alpha_sensitivity.pdf')
-            fig3.savefig(fig3_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {fig3_path}")
-            plt.close(fig3)
+    fig2_path = os.path.join(save_dir, 'ablation_control_time_comparison.pdf')
+    fig2.savefig(fig2_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {fig2_path}")
+    plt.close(fig2)
 
 
 def run_ablation_study(speed=3.0, trajectory_type="random", n_seeds=1, visualize=True,
@@ -418,7 +312,6 @@ def run_ablation_study(speed=3.0, trajectory_type="random", n_seeds=1, visualize
     ordered_keys = [
         "ar_mpc_fifo",
         "ar_mpc_ivs",
-        "ar_mpc_ivs_novelty0",
     ]
     
     # Ensure all keys exist
@@ -484,7 +377,14 @@ def run_ablation_study(speed=3.0, trajectory_type="random", n_seeds=1, visualize
                     f"{result.get('control_time', np.nan)*1000.0:<10.2f} "
                     f"{result['max_vel']:<15.2f}"
                 )
-        
+
+        if "ar_mpc_fifo" in results and "ar_mpc_ivs" in results:
+            fifo_rmse = float(results["ar_mpc_fifo"]["rmse"])
+            ivs_rmse = float(results["ar_mpc_ivs"]["rmse"])
+            improve_pct = (fifo_rmse - ivs_rmse) / max(fifo_rmse, 1e-12) * 100.0
+            print("-" * 70)
+            print(f"IVS vs FIFO RMSE improvement: {improve_pct:+.2f}%")
+
         # Visualize
         if visualize:
             print("\n--- Generating visualizations ---")

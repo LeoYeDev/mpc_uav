@@ -140,7 +140,7 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
             ci_low = fit_mean_dim_i - 1.96 * fit_std_dim_i
             ci_high = fit_mean_dim_i + 1.96 * fit_std_dim_i
 
-            # 训练覆盖区间内：实线；区间外（外推）：虚线
+            # 训练覆盖区间内：仅绘制实线，避免与辅助虚线产生视觉重叠误导。
             in_train = (x_dense_denorm >= x_train_min) & (x_dense_denorm <= x_train_max)
             if np.any(in_train):
                 ax.plot(
@@ -149,29 +149,6 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                     color=colors['fit_mean'],
                     lw=2,
                     label='GP Fit',
-                    zorder=3,
-                )
-            # 避免把左右两个外推段连成一条线跨越中间训练区间。
-            left_extrap = x_dense_denorm < x_train_min
-            right_extrap = x_dense_denorm > x_train_max
-            if np.any(left_extrap):
-                ax.plot(
-                    x_dense_denorm[left_extrap],
-                    fit_mean_dim_i[left_extrap],
-                    color=colors['fit_mean'],
-                    lw=1.5,
-                    linestyle='--',
-                    label='GP Extrap',
-                    zorder=3,
-                )
-            if np.any(right_extrap):
-                ax.plot(
-                    x_dense_denorm[right_extrap],
-                    fit_mean_dim_i[right_extrap],
-                    color=colors['fit_mean'],
-                    lw=1.5,
-                    linestyle='--',
-                    label='_nolegend_',
                     zorder=3,
                 )
             ax.fill_between(
@@ -310,28 +287,6 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                     color=colors['fit_mean'],
                     lw=1.2,
                     label='GP Fit',
-                    zorder=3,
-                )
-            left_extrap = x_dense_denorm < x_train_min
-            right_extrap = x_dense_denorm > x_train_max
-            if np.any(left_extrap):
-                ax_x.plot(
-                    x_dense_denorm[left_extrap],
-                    fit_mean_dim_i[left_extrap],
-                    color=colors['fit_mean'],
-                    lw=1.0,
-                    linestyle='--',
-                    label='GP Extrap',
-                    zorder=3,
-                )
-            if np.any(right_extrap):
-                ax_x.plot(
-                    x_dense_denorm[right_extrap],
-                    fit_mean_dim_i[right_extrap],
-                    color=colors['fit_mean'],
-                    lw=1.0,
-                    linestyle='--',
-                    label='_nolegend_',
                     zorder=3,
                 )
             ax_x.fill_between(

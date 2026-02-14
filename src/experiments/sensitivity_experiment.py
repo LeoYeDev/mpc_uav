@@ -31,7 +31,7 @@ try:
 except Exception:  # pragma: no cover - optional runtime dependency
     torch = None
 
-from config.gp_config import OnlineGPConfig, DEFAULT_ONLINE_GP_CONFIG
+from config.gp_config import OnlineGPConfig, build_online_gp_config
 from src.experiments.ablation_experiment import run_single_ablation
 from src.visualization.style import set_publication_style, SCI_COLORS
 
@@ -201,26 +201,17 @@ def _base_ivs_config(
     refit_interval = max(4, int(round(buffer_size * 0.40)))
     use_async = train_mode == "async"
     main_dev, worker_dev = _resolve_gp_devices(gp_device)
-    return replace(
-        DEFAULT_ONLINE_GP_CONFIG,
+    return build_online_gp_config(
         buffer_type='ivs',
         variance_scaling_alpha=0.0,
         async_hp_updates=use_async,
         main_process_device=main_dev,
         worker_device_str=worker_dev,
-        ivs_multilevel=True,
         buffer_max_size=buffer_size,
         min_points_for_initial_train=min_points,
         refit_hyperparams_interval=refit_interval,
-        worker_train_iters=24,
-        novelty_weight=0.35,
-        recency_weight=0.65,
-        recency_decay_rate=0.12,
-        buffer_min_distance=0.02,
         buffer_level_capacities=_allocate_level_capacities(buffer_size),
         buffer_level_sparsity=[1, 3, 6],
-        gp_kernel='rbf',
-        gp_matern_nu=2.5,
     )
 
 
@@ -244,6 +235,7 @@ def _run_variant(
 
     rmse_list, latency_list, max_vel_list = [], [], []
     opt_list, update_list, control_list = [], [], []
+    predict_list, buffer_list, queue_list = [], [], []
     for seed_offset in range(max(1, int(n_seeds))):
         seed = int(seed_base) + seed_offset
         result = run_single_ablation(
@@ -261,6 +253,9 @@ def _run_variant(
         opt_list.append(float(result.get("opt_time", np.nan)))
         update_list.append(float(result.get("gp_update_time", np.nan)))
         control_list.append(float(result.get("control_time", np.nan)))
+        predict_list.append(float(result.get("gp_predict_time", np.nan)))
+        buffer_list.append(float(result.get("buffer_update_time", np.nan)))
+        queue_list.append(float(result.get("queue_overhead_time", np.nan)))
 
         if latency_metric == "opt":
             latency_list.append(float(result.get("opt_time", np.nan)))
@@ -283,6 +278,12 @@ def _run_variant(
         "gp_update_time_std": float(np.nanstd(update_list)),
         "control_time_mean": float(np.nanmean(control_list)),
         "control_time_std": float(np.nanstd(control_list)),
+        "gp_predict_time_mean": float(np.nanmean(predict_list)),
+        "gp_predict_time_std": float(np.nanstd(predict_list)),
+        "buffer_update_time_mean": float(np.nanmean(buffer_list)),
+        "buffer_update_time_std": float(np.nanstd(buffer_list)),
+        "queue_overhead_time_mean": float(np.nanmean(queue_list)),
+        "queue_overhead_time_std": float(np.nanstd(queue_list)),
         "max_vel_mean": float(np.mean(max_vel_list)),
         "n_success": len(rmse_list),
     }
@@ -398,7 +399,6 @@ def run_levels_sensitivity(
         cfg = replace(
             cfg,
             buffer_type='ivs',
-            ivs_multilevel=True,
             buffer_level_capacities=caps,
             buffer_level_sparsity=sparsity,
         )
@@ -459,7 +459,6 @@ def run_distance_sensitivity(
             cfg = replace(
                 cfg,
                 buffer_type='ivs',
-                ivs_multilevel=True,
                 buffer_min_distance=float(min_d),
                 buffer_local_dup_cap=int(dup_cap),
             )
@@ -677,7 +676,10 @@ def save_records_csv(records: List[Dict], out_path: str) -> None:
         "rmse_mean", "rmse_std",
         "latency_mean", "latency_std",
         "opt_time_mean", "opt_time_std",
+        "gp_predict_time_mean", "gp_predict_time_std",
         "gp_update_time_mean", "gp_update_time_std",
+        "buffer_update_time_mean", "buffer_update_time_std",
+        "queue_overhead_time_mean", "queue_overhead_time_std",
         "control_time_mean", "control_time_std",
         "max_vel_mean", "n_success",
     ]

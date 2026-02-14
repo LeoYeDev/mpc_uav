@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover
     torch = None
 
 from config.configuration_parameters import SimpleSimConfig
-from config.gp_config import DEFAULT_ONLINE_GP_CONFIG, OnlineGPConfig
+from config.gp_config import OnlineGPConfig, build_online_gp_config
 from config.paths import DEFAULT_MODEL_VERSION, DEFAULT_MODEL_NAME
 from src.experiments.comparative_experiment import prepare_quadrotor_mpc
 from src.gp.online import IncrementalGPManager
@@ -64,17 +64,17 @@ def _build_gp_config(method: str, args: argparse.Namespace) -> OnlineGPConfig:
     构建在线 GP 配置（与核心 Online GP 模块保持严格同步）。
 
     这里不再在脚本内定义或覆盖 buffer 超参数，统一复用：
-    `config/gp_config.py` 里的 `DEFAULT_ONLINE_GP_CONFIG`。
+    `config/gp_config.py` 里的 `build_online_gp_config()`（其内部基于默认配置派生）。
     """
     method = method.lower().strip()
-    base = replace(
-        DEFAULT_ONLINE_GP_CONFIG,
+    base = build_online_gp_config(
         async_hp_updates=bool(args.async_updates),
+        variance_scaling_alpha=0.0,
     )
     if method == "fifo":
-        return replace(base, buffer_type="fifo", ivs_multilevel=False)
+        return replace(base, buffer_type="fifo")
     if method == "ivs":
-        return replace(base, buffer_type="ivs", ivs_multilevel=True)
+        return replace(base, buffer_type="ivs")
     raise ValueError(f"Unsupported method: {method}")
 
 
@@ -144,6 +144,9 @@ def _capture_buffer_snapshot(manager: IncrementalGPManager, step: int, sim_time:
                 "training_in_progress": bool(gp.is_training_in_progress),
                 "main_cluster_ratio": float(diagnostics.get("main_cluster_ratio", np.nan)),
                 "selected_size": int(diagnostics.get("selected_size", len(merged))),
+                "unique_ratio": float(diagnostics.get("unique_ratio", np.nan)),
+                "duplicate_ratio": float(diagnostics.get("duplicate_ratio", np.nan)),
+                "coverage_bins_used": float(diagnostics.get("coverage_bins_used", np.nan)),
             }
         )
     return {"step": int(step), "time": float(sim_time), "dims": dims}
@@ -480,6 +483,9 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
         "merged_count",
         "selected_size",
         "main_cluster_ratio",
+        "unique_ratio",
+        "duplicate_ratio",
+        "coverage_bins_used",
         "trained",
         "training_in_progress",
     ] + level_cols
@@ -499,6 +505,21 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
                     "main_cluster_ratio": (
                         f"{float(dim_snap.get('main_cluster_ratio', np.nan)):.6f}"
                         if np.isfinite(float(dim_snap.get("main_cluster_ratio", np.nan)))
+                        else ""
+                    ),
+                    "unique_ratio": (
+                        f"{float(dim_snap.get('unique_ratio', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("unique_ratio", np.nan)))
+                        else ""
+                    ),
+                    "duplicate_ratio": (
+                        f"{float(dim_snap.get('duplicate_ratio', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("duplicate_ratio", np.nan)))
+                        else ""
+                    ),
+                    "coverage_bins_used": (
+                        f"{float(dim_snap.get('coverage_bins_used', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("coverage_bins_used", np.nan)))
                         else ""
                     ),
                     "trained": int(dim_snap["trained"]),
@@ -576,7 +597,7 @@ def main():
     parser.add_argument("--no-video", action="store_true", help="仅导出数据，不渲染动画")
 
     # 在线训练模式开关：
-    # 注意：除异步/同步外，其余 Online GP buffer 参数全部来自 DEFAULT_ONLINE_GP_CONFIG，
+    # 注意：除异步/同步外，其余 Online GP buffer 参数全部来自 build_online_gp_config，
     # 不再在本脚本中提供独立参数入口，确保与核心模块配置完全一致。
     parser.add_argument("--async-updates", action="store_true", default=True, help="异步在线训练（默认）")
     parser.add_argument("--sync-updates", action="store_true", help="同步在线训练（调试用）")

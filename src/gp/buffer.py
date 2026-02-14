@@ -5,7 +5,7 @@ Data buffer strategies for Online GP.
 
 import numpy as np
 from abc import ABC, abstractmethod
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 class BaseBuffer(ABC):
     """Abstract base class for data buffers."""
@@ -31,6 +31,53 @@ class BaseBuffer(ABC):
     def get_training_set(self) -> List[Tuple[float, float]]:
         """Return list of (v, y) tuples for training."""
         return [(p[0], p[1]) for p in self.data]
+
+    def get_training_set_full(self) -> List[Tuple[float, float]]:
+        """
+        返回用于训练的完整数据集。
+        默认与 get_training_set 一致，多级 IVS 会覆盖为“强制全量刷新”。
+        """
+        return self.get_training_set()
+
+    def get_effective_size_fast(self) -> int:
+        """
+        返回当前可用于训练的样本规模（快速路径，不触发重评分）。
+        默认实现直接使用 data 长度，多级 IVS 会覆盖该方法。
+        """
+        return int(len(self.data))
+
+    def get_velocity_bounds_fast(self) -> Tuple[Optional[float], Optional[float]]:
+        """
+        返回速度最小/最大值（快速路径，不触发重评分）。
+        """
+        if not self.data:
+            return None, None
+        velocities = np.array([p[0] for p in self.data], dtype=float)
+        return float(np.min(velocities)), float(np.max(velocities))
+
+    def get_diagnostics_fast(self) -> Dict[str, float]:
+        """
+        轻量级诊断信息，避免在控制回路中触发昂贵的全量计算。
+        """
+        size = float(len(self.data))
+        return {
+            "selected_size": size,
+            "unique_ratio": 1.0 if size > 0 else 0.0,
+            "duplicate_ratio": 0.0,
+            "coverage_bins_used": 1.0 if size > 0 else 0.0,
+            "main_cluster_ratio": 1.0 if size > 0 else 0.0,
+        }
+
+    def get_diagnostics(self) -> Dict[str, float]:
+        """完整诊断接口，默认与快速诊断一致。"""
+        return self.get_diagnostics_fast()
+
+    def get_full_merge_call_count(self) -> int:
+        """
+        返回全量合并/重评分调用次数。
+        对非多级缓冲区恒为 0。
+        """
+        return 0
 
 
     def reset(self):
@@ -226,7 +273,6 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         min_distance: float = 0.01,
         level_capacities: Optional[List[int]] = None,
         level_sparsity: Optional[List[int]] = None,
-        merge_min_distance: Optional[float] = None,
         cluster_anchor_window: int = 6,
         cluster_gap_factor: float = 2.5,
         out_cluster_penalty: float = 0.35,
@@ -234,6 +280,9 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         local_dup_cap: int = 4,
         close_update_v_ratio: float = 0.35,
         close_update_y_threshold: float = 0.03,
+        full_rescore_period: int = 4,
+        coverage_bins: int = 10,
+        min_cover_ratio: float = 0.55,
     ):
         super().__init__(max_size)
         self.novelty_weight = max(float(novelty_weight), 0.0)
@@ -245,13 +294,6 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self.recency_weight /= total_w
         self.decay_rate = max(float(decay_rate), 1e-6)
         self.min_distance = max(float(min_distance), 0.0)
-        # Deprecated compatibility field. Merge ratio/min-distance is no longer
-        # used for final selection logic.
-        self.merge_min_distance = (
-            max(float(merge_min_distance), 0.0)
-            if merge_min_distance is not None
-            else self.min_distance
-        )
         self.cluster_anchor_window = max(1, int(cluster_anchor_window))
         self.cluster_gap_factor = max(1.0, float(cluster_gap_factor))
         self.out_cluster_penalty = float(np.clip(out_cluster_penalty, 0.0, 0.95))
@@ -259,6 +301,9 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self.local_dup_cap = max(1, int(local_dup_cap))
         self.close_update_v_ratio = float(np.clip(close_update_v_ratio, 0.0, 5.0))
         self.close_update_y_threshold = max(float(close_update_y_threshold), 0.0)
+        self.full_rescore_period = max(1, int(full_rescore_period))
+        self.coverage_bins = max(1, int(coverage_bins))
+        self.min_cover_ratio = float(np.clip(min_cover_ratio, 0.0, 1.0))
 
         self.level_capacities = self._resolve_level_capacities(max_size, level_capacities)
         self.level_sparsity = self._resolve_level_sparsity(
@@ -268,9 +313,17 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self.levels = self._build_levels()
 
         self._dirty = True
+        self._dirty_insert_count = 0
         self._cached_training_set: List[Tuple[float, float, float]] = []
         self._last_main_cluster_ratio: float = 1.0
         self._last_selected_size: int = 0
+        self._last_unique_ratio: float = 1.0
+        self._last_duplicate_ratio: float = 0.0
+        self._last_coverage_bins_used: int = 0
+        self._last_candidate_count: int = 0
+        self._last_unique_candidate_count: int = 0
+        self._effective_size_estimate: int = 0
+        self._full_merge_calls: int = 0
 
     def _resolve_level_capacities(self, max_size: int, capacities: Optional[List[int]]) -> List[int]:
         if capacities:
@@ -346,6 +399,91 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
 
         self.total_adds += 1
         self._dirty = True
+        self._dirty_insert_count += 1
+        candidate_count, unique_count = self._estimate_unique_candidate_count_fast()
+        self._last_candidate_count = int(candidate_count)
+        self._last_unique_candidate_count = int(unique_count)
+        # 训练触发计数采用“可达容量”估计，避免因去重过强导致迟迟不触发初训。
+        self._effective_size_estimate = min(int(self.max_size), int(candidate_count))
+
+    def _collect_candidates(self) -> List[Tuple[float, float, float]]:
+        candidates: List[Tuple[float, float, float]] = []
+        for level in self.levels:
+            for v, y, t in level.data:
+                candidates.append((float(v), float(y), float(t)))
+        return candidates
+
+    def _deduplicate_candidates(
+        self,
+        candidates: List[Tuple[float, float, float]],
+        radius: float,
+    ) -> List[Tuple[float, float, float]]:
+        if not candidates:
+            return []
+        if len(candidates) == 1:
+            return list(candidates)
+
+        radius = max(float(radius), 1e-9)
+        sorted_candidates = sorted(candidates, key=lambda p: (p[0], p[2]))
+        deduped: List[Tuple[float, float, float]] = []
+        current_group: List[Tuple[float, float, float]] = [sorted_candidates[0]]
+
+        for point in sorted_candidates[1:]:
+            if abs(point[0] - current_group[-1][0]) <= radius:
+                current_group.append(point)
+            else:
+                # 同一速度邻域只保留“最新样本”，让时效性主导重复点竞争。
+                deduped.append(max(current_group, key=lambda p: p[2]))
+                current_group = [point]
+        deduped.append(max(current_group, key=lambda p: p[2]))
+        return deduped
+
+    def _estimate_unique_candidate_count_fast(self) -> Tuple[int, int]:
+        # 轻量估计：避免在每次 insert 时做全量候选收集+去重（会放大控制回路时延）。
+        candidate_count = int(sum(len(level.data) for level in self.levels))
+        if candidate_count <= 0:
+            return 0, 0
+
+        # 基于最近一次全量/增量合并得到的 unique_ratio 做快速估计。
+        # warm-up 阶段 ratio 可能偏高，这里设置保守下界，避免极端抖动。
+        ratio = float(np.clip(self._last_unique_ratio, 0.35, 1.0))
+        unique_est = int(round(candidate_count * ratio))
+        unique_est = max(1, min(candidate_count, unique_est))
+        return candidate_count, unique_est
+
+    def get_effective_size_fast(self) -> int:
+        return int(self._effective_size_estimate)
+
+    def get_velocity_bounds_fast(self) -> Tuple[Optional[float], Optional[float]]:
+        velocities = []
+        for level in self.levels:
+            if level.data:
+                velocities.extend([p[0] for p in level.data])
+        if not velocities:
+            return None, None
+        v_arr = np.asarray(velocities, dtype=float)
+        return float(np.min(v_arr)), float(np.max(v_arr))
+
+    def get_diagnostics_fast(self) -> Dict[str, float]:
+        candidate = max(float(self._last_candidate_count), 1.0)
+        unique = float(self._last_unique_candidate_count)
+        unique_ratio = float(unique / candidate)
+        duplicate_ratio = float(max(0.0, 1.0 - unique_ratio))
+        selected_size_fast = (
+            float(self._last_selected_size)
+            if self._last_selected_size > 0
+            else float(self._effective_size_estimate)
+        )
+        return {
+            "main_cluster_ratio": float(self._last_main_cluster_ratio),
+            "selected_size": selected_size_fast,
+            "unique_ratio": unique_ratio,
+            "duplicate_ratio": duplicate_ratio,
+            "coverage_bins_used": float(self._last_coverage_bins_used),
+        }
+
+    def get_full_merge_call_count(self) -> int:
+        return int(self._full_merge_calls)
 
     def _compute_recency_scores(self, timestamps: np.ndarray) -> np.ndarray:
         if timestamps.size <= 1:
@@ -438,16 +576,32 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         return labels, main_label, main_ratio
 
     def _compute_merged_points(self) -> List[Tuple[float, float, float]]:
-        candidates: List[Tuple[float, float, float]] = []
-        for level in self.levels:
-            for v, y, t in level.data:
-                candidates.append((float(v), float(y), float(t)))
-
-        if not candidates:
+        raw_candidates = self._collect_candidates()
+        if not raw_candidates:
             self._last_main_cluster_ratio = 0.0
             self._last_selected_size = 0
+            self._last_unique_ratio = 0.0
+            self._last_duplicate_ratio = 0.0
+            self._last_coverage_bins_used = 0
+            self._effective_size_estimate = 0
             return []
 
+        dedup_radius = max(0.6 * float(self.min_distance), 1e-6)
+        deduped_candidates = self._deduplicate_candidates(raw_candidates, dedup_radius)
+
+        self._last_candidate_count = len(raw_candidates)
+        self._last_unique_candidate_count = len(deduped_candidates)
+        if self._last_candidate_count > 0:
+            self._last_unique_ratio = float(self._last_unique_candidate_count / self._last_candidate_count)
+        else:
+            self._last_unique_ratio = 0.0
+        self._last_duplicate_ratio = float(max(0.0, 1.0 - self._last_unique_ratio))
+
+        if not deduped_candidates:
+            self._effective_size_estimate = 0
+            return []
+
+        candidates = deduped_candidates
         velocities = np.array([p[0] for p in candidates], dtype=float)
         timestamps = np.array([p[2] for p in candidates], dtype=float)
         total_scores, novelty_scores, recency_scores = self._compute_unified_scores(velocities, timestamps)
@@ -455,7 +609,9 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         labels, main_label, main_ratio = self._identify_main_cluster(velocities, timestamps)
         penalized_scores = total_scores.copy()
         if main_label >= 0:
-            penalized_scores[labels != main_label] *= (1.0 - self.out_cluster_penalty)
+            # 温和主簇惩罚：保留“连续演化”偏好，但避免把所有点硬挤回最新簇。
+            penalty_factor = max(0.0, 1.0 - 0.5 * self.out_cluster_penalty)
+            penalized_scores[labels != main_label] *= penalty_factor
 
         order = sorted(
             range(len(candidates)),
@@ -470,14 +626,54 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
 
         lower_target = max(1, int(self.max_size) - int(self.target_size_slack))
         upper_target = int(self.max_size)
-        rho = max(float(self.min_distance), 1e-6)
+        v_span = max(float(np.max(velocities) - np.min(velocities)), 1e-6)
+        rho_base = max(float(self.min_distance), 1e-6)
+        # 自适应稀疏距离：速度跨度越大，允许更大的选点间距，避免样本塌缩到单簇。
+        rho = max(rho_base, v_span / max(2.5 * float(max(upper_target, 1)), 1.0))
+        n_bins = max(1, int(self.coverage_bins))
 
         selected: List[int] = []
         selected_set = set()
 
+        # 第一阶段：覆盖优先，先保证不同速度分区至少有代表点。
+        coverage_bins_used = set()
+        if n_bins > 1 and len(candidates) > 1:
+            v_min, v_max = float(np.min(velocities)), float(np.max(velocities))
+            span = max(v_max - v_min, 1e-6)
+            norm = (velocities - v_min) / span
+            bin_ids = np.clip((norm * n_bins).astype(int), 0, n_bins - 1)
+            per_bin_best = {}
+            for idx in order:
+                b = int(bin_ids[idx])
+                if b not in per_bin_best:
+                    per_bin_best[b] = idx
+            target_cover = int(np.ceil(upper_target * self.min_cover_ratio))
+            target_cover = max(1, min(target_cover, upper_target, len(per_bin_best)))
+            ranked_bin_candidates = sorted(
+                per_bin_best.values(),
+                key=lambda i: (penalized_scores[i], recency_scores[i], timestamps[i]),
+                reverse=True,
+            )
+            for idx in ranked_bin_candidates:
+                if len(selected) >= target_cover:
+                    break
+                if not selected:
+                    selected.append(idx)
+                    selected_set.add(idx)
+                    coverage_bins_used.add(int(bin_ids[idx]))
+                    continue
+                d_min = float(np.min(np.abs(velocities[idx] - velocities[np.array(selected, dtype=int)])))
+                if d_min >= rho:
+                    selected.append(idx)
+                    selected_set.add(idx)
+                    coverage_bins_used.add(int(bin_ids[idx]))
+
+        # 第二阶段：按 IVS 分数补齐，仍保持近邻去重。
         for idx in order:
             if len(selected) >= upper_target:
                 break
+            if idx in selected_set:
+                continue
             if not selected:
                 selected.append(idx)
                 selected_set.add(idx)
@@ -499,29 +695,107 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
                 if len(selected) >= lower_target:
                     break
 
-        if len(selected) < upper_target:
-            relaxed = max(0.5 * rho, 1e-9)
-            for idx in order:
-                if idx in selected_set:
+        selected_points = [candidates[i] for i in selected]
+
+        # 第三阶段：若去重后样本不足 N-1，则允许从原始候选回填（保持公平容量口径）。
+        if len(selected_points) < lower_target:
+            selected_keys = {(p[0], p[1], p[2]) for p in selected_points}
+            raw_by_recency = sorted(raw_candidates, key=lambda p: p[2], reverse=True)
+            for p in raw_by_recency:
+                key = (p[0], p[1], p[2])
+                if key in selected_keys:
                     continue
-                d_min = float(np.min(np.abs(velocities[idx] - velocities[np.array(selected, dtype=int)])))
-                if d_min >= relaxed:
-                    selected.append(idx)
-                    selected_set.add(idx)
-                if len(selected) >= upper_target:
+                selected_points.append(p)
+                selected_keys.add(key)
+                if len(selected_points) >= lower_target:
                     break
 
-        selected_points = [candidates[i] for i in selected]
+        if len(selected_points) < lower_target:
+            # 若原始候选本身重复度极高，允许重复回填以维持与 FIFO 一致的容量口径。
+            raw_by_recency = sorted(raw_candidates, key=lambda p: p[2], reverse=True)
+            for p in raw_by_recency:
+                selected_points.append(p)
+                if len(selected_points) >= lower_target:
+                    break
+
+        # 不再强制填满到 N；允许训练集在 [N-slack, N] 内弹性变化。
+        selected_points = selected_points[:upper_target]
         selected_points.sort(key=lambda p: p[2])
 
         self._last_main_cluster_ratio = float(main_ratio)
         self._last_selected_size = len(selected_points)
+        self._last_coverage_bins_used = len(coverage_bins_used) if coverage_bins_used else 0
+        if n_bins > 1 and len(selected_points) > 0:
+            # 如果覆盖阶段未命中（例如速度跨度极小），回退为最终集合统计。
+            if self._last_coverage_bins_used == 0:
+                sel_v = np.array([p[0] for p in selected_points], dtype=float)
+                v_min, v_max = float(np.min(sel_v)), float(np.max(sel_v))
+                span = max(v_max - v_min, 1e-6)
+                norm = (sel_v - v_min) / span
+                sel_bins = np.clip((norm * n_bins).astype(int), 0, n_bins - 1)
+                self._last_coverage_bins_used = int(len(np.unique(sel_bins)))
+        self._effective_size_estimate = int(min(self.max_size, len(selected_points)))
         return selected_points
 
-    def _refresh_cache_if_needed(self) -> None:
+    def _compute_incremental_points_fast(self) -> List[Tuple[float, float, float]]:
+        """
+        轻量级增量合并：用于两个全量重评分周期之间的快速刷新。
+        """
+        candidates = self._collect_candidates()
+        if not candidates:
+            self._effective_size_estimate = 0
+            return []
+
+        dedup_radius = max(0.6 * float(self.min_distance), 1e-6)
+        deduped = self._deduplicate_candidates(candidates, dedup_radius)
+        deduped.sort(key=lambda p: p[2], reverse=True)
+
+        lower_target = max(1, int(self.max_size) - int(self.target_size_slack))
+        upper_target = int(self.max_size)
+        selected = deduped[:upper_target]
+
+        if len(selected) < lower_target:
+            # 当去重后不足下界时，允许回填最近候选，保证 N-1~N 目标。
+            seen = {(p[0], p[1], p[2]) for p in selected}
+            for p in sorted(candidates, key=lambda x: x[2], reverse=True):
+                key = (p[0], p[1], p[2])
+                if key in seen:
+                    continue
+                selected.append(p)
+                seen.add(key)
+                if len(selected) >= lower_target:
+                    break
+
+        if len(selected) < lower_target:
+            for p in sorted(candidates, key=lambda x: x[2], reverse=True):
+                selected.append(p)
+                if len(selected) >= lower_target:
+                    break
+
+        # 增量路径同样保持弹性：不强制填满到 N。
+        selected = selected[:upper_target]
+        selected.sort(key=lambda p: p[2])
+        self._last_candidate_count = len(candidates)
+        self._last_unique_candidate_count = len(deduped)
+        if self._last_candidate_count > 0:
+            self._last_unique_ratio = float(self._last_unique_candidate_count / self._last_candidate_count)
+        else:
+            self._last_unique_ratio = 0.0
+        self._last_duplicate_ratio = float(max(0.0, 1.0 - self._last_unique_ratio))
+        self._last_selected_size = len(selected)
+        self._effective_size_estimate = int(min(self.max_size, len(selected)))
+        return selected
+
+    def _refresh_cache_if_needed(self, force_full: bool = False) -> None:
         if not self._dirty:
             return
-        self._cached_training_set = self._compute_merged_points()
+        use_full = force_full or self._dirty_insert_count >= self.full_rescore_period or not self._cached_training_set
+        if use_full:
+            self._cached_training_set = self._compute_merged_points()
+            self._full_merge_calls += 1
+            self._dirty_insert_count = 0
+        else:
+            self._cached_training_set = self._compute_incremental_points_fast()
         self.data = list(self._cached_training_set)
         self._dirty = False
 
@@ -536,11 +810,19 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self._refresh_cache_if_needed()
         return [(p[0], p[1]) for p in self._cached_training_set]
 
+    def get_training_set_full(self) -> List[Tuple[float, float]]:
+        self._refresh_cache_if_needed(force_full=True)
+        return [(p[0], p[1]) for p in self._cached_training_set]
+
     def get_diagnostics(self) -> dict:
         self._refresh_cache_if_needed()
         return {
             "main_cluster_ratio": float(self._last_main_cluster_ratio),
             "selected_size": int(self._last_selected_size),
+            "unique_ratio": float(self._last_unique_ratio),
+            "duplicate_ratio": float(self._last_duplicate_ratio),
+            "coverage_bins_used": int(self._last_coverage_bins_used),
+            "full_merge_calls": int(self._full_merge_calls),
         }
 
     def reset(self):
@@ -549,4 +831,14 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self.data = []
         self.total_adds = 0
         self._dirty = True
+        self._dirty_insert_count = 0
         self._cached_training_set = []
+        self._last_main_cluster_ratio = 1.0
+        self._last_selected_size = 0
+        self._last_unique_ratio = 1.0
+        self._last_duplicate_ratio = 0.0
+        self._last_coverage_bins_used = 0
+        self._last_candidate_count = 0
+        self._last_unique_candidate_count = 0
+        self._effective_size_estimate = 0
+        self._full_merge_calls = 0
