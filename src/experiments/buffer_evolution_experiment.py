@@ -142,6 +142,7 @@ def _capture_buffer_snapshot(manager: IncrementalGPManager, step: int, sim_time:
                 "selected_size": int(diagnostics.get("selected_size", len(merged))),
                 "unique_ratio": float(diagnostics.get("unique_ratio", np.nan)),
                 "duplicate_ratio": float(diagnostics.get("duplicate_ratio", np.nan)),
+                "no_delete_phase": float(diagnostics.get("no_delete_phase", np.nan)),
                 "insert_accept_ratio": float(diagnostics.get("insert_accept_ratio", np.nan)),
                 "insert_skip_ratio": float(diagnostics.get("insert_skip_ratio", np.nan)),
                 "prune_old_count": float(diagnostics.get("prune_old_count", np.nan)),
@@ -156,6 +157,7 @@ def _capture_buffer_snapshot(manager: IncrementalGPManager, step: int, sim_time:
 def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
     _set_seed(int(args.seed))
     method_key = method.lower().strip()
+    gp_cfg = _build_gp_config(method_key, args)
 
     simulation_options = SimpleSimConfig.simulation_disturbances
     quad_name = f"my_quad_bufvis_{method_key}_{int(time.time())}"
@@ -166,9 +168,9 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
         reg_type="gp",
         quad_name=quad_name,
         use_online_gp=True,
-        solver_options={"variance_scaling_alpha": 0.0},
+        solver_options={"variance_scaling_alpha": float(gp_cfg.variance_scaling_alpha)},
     )
-    manager = IncrementalGPManager(config=_build_gp_config(method_key, args).to_dict())
+    manager = IncrementalGPManager(config=gp_cfg.to_dict())
 
     my_quad = quad_mpc.quad
     n_mpc_nodes = quad_mpc.n_nodes
@@ -194,6 +196,8 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
     current_idx = 0
     total_sim_time = 0.0
     x_pred = None
+    alpha = float(getattr(quad_mpc.quad_opt, "variance_scaling_alpha", 0.0))
+    need_variance_for_control = bool(abs(alpha) > 1e-12)
     snapshots: List[Dict] = []
     # 记录执行轨迹，用于计算与 comparative_experiment 一致口径的 RMSE。
     exec_traj = np.zeros((max_steps + 1, reference_traj.shape[1]), dtype=float)
@@ -215,7 +219,21 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
             if x_pred is not None and any(gp.is_trained_once for gp in manager.gps):
                 planned_states_body = world_to_body_velocity_mapping(x_pred)
                 planned_velocities_body = planned_states_body[:, 7:10]
-                online_predictions, online_variances = manager.predict(planned_velocities_body)
+                n_needed = int(n_mpc_nodes)
+                if planned_velocities_body.shape[0] <= 0:
+                    query_vel = np.zeros((n_needed, 3), dtype=float)
+                elif planned_velocities_body.shape[0] >= n_needed:
+                    query_vel = planned_velocities_body[:n_needed, :]
+                else:
+                    tail = np.tile(planned_velocities_body[-1, :], (n_needed - planned_velocities_body.shape[0], 1))
+                    query_vel = np.vstack((planned_velocities_body, tail))
+                pred_mean, pred_var = manager.predict(
+                    query_vel,
+                    need_variance=need_variance_for_control,
+                    clamp_extrapolation=False,
+                )
+                online_predictions = pred_mean
+                online_variances = pred_var if need_variance_for_control else None
 
             w_opt, x_pred = quad_mpc.optimize(
                 use_model=model_ind,
@@ -276,6 +294,7 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
         "speed": float(args.speed),
         "wind_profile": args.wind_profile,
         "max_steps": int(max_steps),
+        "eval_len": int(eval_len),
         "frame_stride": int(args.frame_stride),
         "seed": int(args.seed),
         "rmse": rmse,
@@ -485,6 +504,7 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
         "selected_size",
         "unique_ratio",
         "duplicate_ratio",
+        "no_delete_phase",
         "insert_accept_ratio",
         "insert_skip_ratio",
         "prune_old_count",
@@ -515,6 +535,11 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
                     "duplicate_ratio": (
                         f"{float(dim_snap.get('duplicate_ratio', np.nan)):.6f}"
                         if np.isfinite(float(dim_snap.get("duplicate_ratio", np.nan)))
+                        else ""
+                    ),
+                    "no_delete_phase": (
+                        f"{float(dim_snap.get('no_delete_phase', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("no_delete_phase", np.nan)))
                         else ""
                     ),
                     "insert_accept_ratio": (
@@ -612,7 +637,7 @@ def main():
     parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"],
                         help="风场模式：default 或 regime_shift")
     parser.add_argument("--seed", type=int, default=303, help="随机种子（用于可复现）")
-    parser.add_argument("--max-steps", type=int, default=500, help="控制步数上限")
+    parser.add_argument("--max-steps", type=int, default=400, help="控制步数上限")
     parser.add_argument("--frame-stride", type=int, default=2, help="动画抽帧间隔（每 N 步取一帧）")
     parser.add_argument("--fps", type=int, default=12, help="动画帧率")
     parser.add_argument("--format", type=str, default="gif", choices=["gif", "mp4", "both"],
@@ -661,6 +686,7 @@ def main():
         print(f"  saved trace: {artifacts[0]}")
         print(f"  saved counts: {artifacts[1]}")
         print(f"  RMSE: {trace['rmse']:.6f} m | MaxRefSpeed: {trace['max_vel']:.3f} m/s")
+        print(f"  EvalLen: {trace['eval_len']} states | MaxSteps: {trace['max_steps']}")
 
     rmse_summary_path = save_rmse_summary(traces, methods, out_dir)
     saved_paths.append(rmse_summary_path)

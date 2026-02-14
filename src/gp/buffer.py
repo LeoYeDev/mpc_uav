@@ -51,6 +51,7 @@ class BaseBuffer(ABC):
             "selected_size": size,
             "unique_ratio": 1.0 if size > 0 else 0.0,
             "duplicate_ratio": 0.0,
+            "no_delete_phase": 0.0,
             "insert_accept_ratio": 1.0 if self.total_adds > 0 else 0.0,
             "insert_skip_ratio": 0.0,
             "prune_old_count": 0.0,
@@ -104,6 +105,7 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         insert_min_delta_v: float = 0.15,
         prune_old_delta_v: float = 0.15,
         flip_prune_limit: int = 3,
+        no_prune_below_n: int = 5,
         level_capacities: Optional[List[int]] = None,
         level_sparsity: Optional[List[int]] = None,
         novelty_weight: float = 0.55,
@@ -114,6 +116,8 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self.insert_min_delta_v = max(float(insert_min_delta_v), 0.0)
         self.prune_old_delta_v = max(float(prune_old_delta_v), 0.0)
         self.flip_prune_limit = max(0, int(flip_prune_limit))
+        # 保护上限，避免阈值设置超过总容量导致长期不收敛。
+        self.no_prune_below_n = max(1, min(int(no_prune_below_n), self.max_size))
         self.novelty_weight = max(0.0, float(novelty_weight))
         self.recency_weight = max(0.0, float(recency_weight))
         self.recency_decay_rate = max(0.0, float(recency_decay_rate))
@@ -147,6 +151,7 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self._last_unique_candidate_count = 0
         self._last_unique_ratio = 0.0
         self._last_duplicate_ratio = 0.0
+        self._last_no_delete_phase = 1.0
 
     def _resolve_level_capacities(self, max_size: int, manual_caps: Optional[List[int]] = None) -> List[int]:
         n = int(max(1, max_size))
@@ -227,11 +232,18 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
             return recency
         return float((w_n * novelty + w_r * recency) / w_sum)
 
-    def _append_with_capacity(self, level_idx: int, point: Tuple[float, float, float]) -> None:
+    def _append_with_capacity(
+        self,
+        level_idx: int,
+        point: Tuple[float, float, float],
+        enforce_capacity: bool = True,
+    ) -> None:
         level = self.levels[level_idx]
         if level.capacity <= 0:
             return
         level.data.append(point)
+        if not enforce_capacity:
+            return
         while len(level.data) > level.capacity:
             t_ref = max(float(p[2]) for p in level.data)
             scores = [self._compute_score(level.data, i, t_ref=t_ref) for i in range(len(level.data))]
@@ -342,6 +354,11 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self.total_adds += 1
         self._last_prune_old_count = 0
         self._last_flip_delete_count = 0
+        # 当有效点数 < no_prune_below_n 时，禁用所有删点逻辑，优先积累样本。
+        self._refresh_cache_if_needed()
+        selected_size = int(self._last_selected_size)
+        in_no_delete_phase = selected_size < int(self.no_prune_below_n)
+        self._last_no_delete_phase = 1.0 if in_no_delete_phase else 0.0
 
         level0 = self.levels[0]
         accept = False
@@ -366,7 +383,7 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         p_new = (v_new, y_new, t_new)
 
         # L0 每个接受点都进入。
-        self._append_with_capacity(0, p_new)
+        self._append_with_capacity(0, p_new, enforce_capacity=not in_no_delete_phase)
 
         # L1/L2 按步长稀疏提升。
         for level_idx in (1, 2):
@@ -374,15 +391,16 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
                 continue
             stride = max(1, int(self.level_sparsity[level_idx]))
             if self._accepted_adds % stride == 0:
-                self._append_with_capacity(level_idx, p_new)
+                self._append_with_capacity(level_idx, p_new, enforce_capacity=not in_no_delete_phase)
 
-        pruned = self._prune_old_near_points(v_new=v_new, t_new=t_new)
-        self.prune_old_count_total += int(pruned)
-        self._last_prune_old_count = int(pruned)
+        if not in_no_delete_phase:
+            pruned = self._prune_old_near_points(v_new=v_new, t_new=t_new)
+            self.prune_old_count_total += int(pruned)
+            self._last_prune_old_count = int(pruned)
 
-        flip_removed = self._apply_flip_pruning()
-        self.flip_delete_count_total += int(flip_removed)
-        self._last_flip_delete_count = int(flip_removed)
+            flip_removed = self._apply_flip_pruning()
+            self.flip_delete_count_total += int(flip_removed)
+            self._last_flip_delete_count = int(flip_removed)
 
         self._dirty = True
 
@@ -416,6 +434,7 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
             "selected_size": float(self._last_selected_size),
             "unique_ratio": float(self._last_unique_ratio),
             "duplicate_ratio": float(self._last_duplicate_ratio),
+            "no_delete_phase": float(self._last_no_delete_phase),
             "insert_accept_ratio": float(self.insert_accept_count / total_seen),
             "insert_skip_ratio": float(self.insert_skip_count / total_seen),
             "prune_old_count": float(self.prune_old_count_total),
@@ -459,3 +478,4 @@ class MultiLevelInformationGainBuffer(BaseBuffer):
         self._last_unique_candidate_count = 0
         self._last_unique_ratio = 0.0
         self._last_duplicate_ratio = 0.0
+        self._last_no_delete_phase = 1.0

@@ -224,6 +224,7 @@ class IncrementalGP:
             insert_min_delta_v = float(config.get('buffer_insert_min_delta_v', 0.15))
             prune_old_delta_v = float(config.get('buffer_prune_old_delta_v', 0.15))
             flip_prune_limit = int(config.get('buffer_flip_prune_limit', 3))
+            no_prune_below_n = int(config.get('buffer_no_prune_below_n', 5))
             level_capacities = config.get('buffer_level_capacities', None)
             level_sparsity = config.get('buffer_level_sparsity', None)
             novelty_weight = float(config.get('novelty_weight', 0.55))
@@ -234,6 +235,7 @@ class IncrementalGP:
                 insert_min_delta_v=insert_min_delta_v,
                 prune_old_delta_v=prune_old_delta_v,
                 flip_prune_limit=flip_prune_limit,
+                no_prune_below_n=no_prune_below_n,
                 level_capacities=level_capacities,
                 level_sparsity=level_sparsity,
                 novelty_weight=novelty_weight,

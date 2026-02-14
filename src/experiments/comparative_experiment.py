@@ -120,7 +120,8 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
          wind_profile="default", trajectory_seed=303,
          online_gp_pred_points=None,
          step_metrics_csv_path=None,
-         buffer_debug_interval=0):
+         buffer_debug_interval=0,
+         max_steps=None):
     """
     Run tracking experiment with unified configuration.
 
@@ -135,6 +136,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     :param online_gp_pred_points: 仅用于快照绘图的最大预测点数量（控制补偿始终使用 N）
     :param step_metrics_csv_path: 每步控制统计CSV路径（None 表示不导出）
     :param buffer_debug_interval: buffer 调试打印间隔（步）；0 表示关闭
+    :param max_steps: 最大控制步数；None 表示按整段轨迹运行
     """
     # 固定随机源：同一 seed 下保证风场、GP 初始化与轨迹采样可复现。
     seed_int = int(trajectory_seed)
@@ -172,6 +174,12 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         reference_traj, reference_timestamps, reference_u = random_trajectory(
             quad=my_quad, discretization_dt=mpc_period, seed=trajectory_seed, speed=av_speed, plot=plot)
 
+    max_available_steps = max(0, int(reference_traj.shape[0] - 1))
+    if max_steps is None:
+        max_control_steps = int(max_available_steps)
+    else:
+        max_control_steps = max(0, min(int(max_steps), int(max_available_steps)))
+
     # Set quad initial state equal to the initial reference trajectory state
     quad_current_state = reference_traj[0, :].tolist()
     my_quad.set_state(quad_current_state)
@@ -187,8 +195,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     max_simulation_time = 20000
 
     ref_u = reference_u[0, :]
-    quad_trajectory = np.zeros((len(reference_timestamps), len(quad_current_state)))
-    u_optimized_seq = np.zeros((len(reference_timestamps), 4))
+    trajectory_len = int(max_control_steps + 1)
+    quad_trajectory = np.zeros((trajectory_len, len(quad_current_state)))
+    u_optimized_seq = np.zeros((trajectory_len, 4))
 
     # Sliding reference trajectory initial index
     current_idx = 0
@@ -234,7 +243,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     alpha = float(getattr(quad_mpc.quad_opt, "variance_scaling_alpha", 0.0))
     need_variance_for_control = bool(abs(alpha) > 1e-12)
 
-    while (time.time() - start_time) < max_simulation_time and current_idx < reference_traj.shape[0]:
+    while (time.time() - start_time) < max_simulation_time and current_idx < max_control_steps:
         iter_compute_start = time.perf_counter()
 
         quad_current_state = my_quad.get_state(quaternion=True, stacked=True)
@@ -549,8 +558,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         current_idx += 1   
 
     quad_current_state = my_quad.get_state(quaternion=True, stacked=True)
-    quad_trajectory[-1, :] = np.expand_dims(quad_current_state, axis=0)
-    u_optimized_seq[-1, :] = np.reshape(ref_u, (1, -1))
+    final_idx = min(int(current_idx), int(quad_trajectory.shape[0] - 1))
+    quad_trajectory[final_idx, :] = np.expand_dims(quad_current_state, axis=0)
+    u_optimized_seq[final_idx, :] = np.reshape(ref_u, (1, -1))
     
     # Average elapsed time per control step
     mean_opt_time = mpc_opt_time_acc / max(current_idx, 1)
@@ -562,8 +572,14 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     mean_pre_sim_ctrl_time = control_pre_sim_time_acc / max(current_idx, 1)
     mean_post_sim_ctrl_time = control_post_sim_time_acc / max(current_idx, 1)
 
-    rmse = interpol_mse(reference_timestamps, reference_traj[:, :3], reference_timestamps, quad_trajectory[:, :3])
-    max_vel = np.max(np.sqrt(np.sum(reference_traj[:, 7:10] ** 2, 1)))
+    eval_len = int(min(current_idx + 1, reference_traj.shape[0], quad_trajectory.shape[0], len(reference_timestamps)))
+    rmse = interpol_mse(
+        reference_timestamps[:eval_len],
+        reference_traj[:eval_len, :3],
+        reference_timestamps[:eval_len],
+        quad_trajectory[:eval_len, :3],
+    )
+    max_vel = np.max(np.sqrt(np.sum(reference_traj[:eval_len, 7:10] ** 2, 1)))
     
     print(f'\n--- Simulation finished ---\n')
     print(f'Average optimization time (solve only): {mean_opt_time:.4f} s')
@@ -574,6 +590,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     print(f'Average control compute time (full pipeline, no sleep/sim): {mean_total_ctrl_time:.4f} s')
     print(f'  - pre-sim compute: {mean_pre_sim_ctrl_time:.4f} s')
     print(f'  - post-sim compute: {mean_post_sim_ctrl_time:.4f} s')
+    print(f'Evaluation length: {eval_len} states (max_steps={max_steps if max_steps is not None else "full"})')
     print(f'RMSE: {rmse:.4f} m')
     print(f'Maximum velocity: {max_vel:.2f} m/s')
 
@@ -650,9 +667,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         rmse,
         max_vel,
         mean_opt_time,
-        reference_timestamps,
-        reference_traj,
-        quad_trajectory,
+        reference_timestamps[:eval_len],
+        reference_traj[:eval_len, :],
+        quad_trajectory[:eval_len, :],
         mean_gp_update_time,
         mean_total_ctrl_time,
         runtime_details,
@@ -682,6 +699,8 @@ if __name__ == '__main__':
                         help="每步统计 CSV 输出路径；若 controller=both 会自动加后缀")
     parser.add_argument("--buffer-debug-interval", type=int, default=0,
                         help="在线 buffer 调试打印步长（0=关闭）")
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="最大控制步数（默认按整段轨迹运行）")
     args = parser.parse_args()
 
     traj_type_vec = [args.trajectory]
@@ -766,6 +785,7 @@ if __name__ == '__main__':
                     trajectory_seed=int(args.seed),
                     step_metrics_csv_path=step_csv,
                     buffer_debug_interval=int(args.buffer_debug_interval),
+                    max_steps=args.max_steps,
                 )
                 (
                     mse[traj_id, v_id, n_train_id],
