@@ -406,7 +406,7 @@ if __name__ == "__main__":
     parser.add_argument("--seeds", type=int, default=1, help="Number of Monte Carlo seeds")
     parser.add_argument("--seed-base", type=int, default=303, help="Base random seed")
     parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"])
-    parser.add_argument("--preset", type=str, default="contrast", choices=["baseline", "contrast"])
+    parser.add_argument("--preset", type=str, default="baseline", choices=["baseline", "contrast"])
     parser.add_argument("--no-viz", action="store_true", help="Disable visualization")
     args = parser.parse_args()
 

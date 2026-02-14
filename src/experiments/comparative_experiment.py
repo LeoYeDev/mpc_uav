@@ -14,6 +14,7 @@ import argparse
 import time
 import csv
 import os
+import random
 import numpy as np
 
 from config.configuration_parameters import SimpleSimConfig
@@ -35,6 +36,10 @@ from src.gp.rdrv import load_rdrv
 from src.gp.utils import world_to_body_velocity_mapping
 from src.gp.online import IncrementalGPManager
 from src.utils.data_logger import DataLogger
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None
 
 
 def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type="gp", quad_name=None,
@@ -131,6 +136,12 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     :param step_metrics_csv_path: 每步控制统计CSV路径（None 表示不导出）
     :param buffer_debug_interval: buffer 调试打印间隔（步）；0 表示关闭
     """
+    # 固定随机源：同一 seed 下保证风场、GP 初始化与轨迹采样可复现。
+    seed_int = int(trajectory_seed)
+    random.seed(seed_int)
+    np.random.seed(seed_int)
+    if torch is not None:
+        torch.manual_seed(seed_int)
 
     # Recover some necessary variables from the MPC object
     my_quad = quad_mpc.quad
