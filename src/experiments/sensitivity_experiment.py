@@ -12,7 +12,7 @@ Typical usage:
 2) Quick sweep:
    python src/experiments/sensitivity_experiment.py --mode quick --studies novelty_decay,levels,distance,kernel
 3) Full sweep for paper:
-   python src/experiments/sensitivity_experiment.py --mode full --studies novelty_decay,levels,distance,kernel,sobol --seeds 5 --wind-profile regime_shift
+   python src/experiments/sensitivity_experiment.py --mode full --studies novelty_decay,levels,distance,kernel,sobol --seeds 5 --wind-profile regime_shift --speed 3.0
 """
 
 import argparse
@@ -31,7 +31,7 @@ try:
 except Exception:  # pragma: no cover - optional runtime dependency
     torch = None
 
-from config.gp_config import OnlineGPConfig
+from config.gp_config import OnlineGPConfig, DEFAULT_ONLINE_GP_CONFIG
 from src.experiments.ablation_experiment import run_single_ablation
 from src.visualization.style import set_publication_style, SCI_COLORS
 
@@ -90,8 +90,8 @@ def _study_values(mode: str) -> Dict[str, Dict]:
             {"name": "mid_heavy", "caps": [7, 5, 2], "sparsity": [1, 2, 6]},
             {"name": "tail_heavy", "caps": [5, 4, 5], "sparsity": [1, 2, 5]},
         ]
-        distance_vals = [0.003, 0.005, 0.007, 0.010, 0.013, 0.017, 0.022, 0.028, 0.036, 0.046]
-        merge_ratios = [1.0, 1.15, 1.30, 1.45, 1.60, 1.80, 2.00]
+        distance_vals = [0.006, 0.008, 0.010, 0.013, 0.016, 0.020, 0.024, 0.029, 0.034, 0.040]
+        local_dup_caps = [2, 3, 4, 5, 6, 8]
         kernel_specs = [
             {"kernel": "rbf", "nu": 2.5},
             {"kernel": "matern12", "nu": 0.5},
@@ -102,9 +102,9 @@ def _study_values(mode: str) -> Dict[str, Dict]:
         return {
             "novelty_decay": {"novelty": novelty_grid, "decay": decay_grid},
             "levels": {"profiles": levels_profiles},
-            "distance": {"min_distance": distance_vals, "merge_ratio": merge_ratios},
+            "distance": {"min_distance": distance_vals, "local_dup_cap": local_dup_caps},
             "kernel": {"kernels": kernel_specs},
-            "sobol": {"n_points": 96},
+            "sobol": {"n_points": 128},
         }
 
     if mode == "quick":
@@ -121,7 +121,7 @@ def _study_values(mode: str) -> Dict[str, Dict]:
                     {"name": "very_sparse_long", "caps": [7, 4, 3], "sparsity": [1, 4, 8]},
                 ]
             },
-            "distance": {"min_distance": [0.005, 0.010, 0.015, 0.022, 0.032], "merge_ratio": [1.0, 1.3, 1.6]},
+            "distance": {"min_distance": [0.008, 0.012, 0.016, 0.022, 0.030], "local_dup_cap": [2, 4, 6]},
             "kernel": {
                 "kernels": [
                     {"kernel": "rbf", "nu": 2.5},
@@ -130,7 +130,7 @@ def _study_values(mode: str) -> Dict[str, Dict]:
                     {"kernel": "matern_nu", "nu": 1.8},
                 ]
             },
-            "sobol": {"n_points": 24},
+            "sobol": {"n_points": 32},
         }
 
     # smoke
@@ -142,7 +142,7 @@ def _study_values(mode: str) -> Dict[str, Dict]:
                 {"name": "long_memory", "caps": [6, 4, 4], "sparsity": [1, 2, 4]},
             ]
         },
-        "distance": {"min_distance": [0.01, 0.03], "merge_ratio": [1.0, 1.5]},
+        "distance": {"min_distance": [0.01, 0.025], "local_dup_cap": [2, 4]},
         "kernel": {
             "kernels": [
                 {"kernel": "rbf", "nu": 2.5},
@@ -201,7 +201,8 @@ def _base_ivs_config(
     refit_interval = max(4, int(round(buffer_size * 0.40)))
     use_async = train_mode == "async"
     main_dev, worker_dev = _resolve_gp_devices(gp_device)
-    return OnlineGPConfig(
+    return replace(
+        DEFAULT_ONLINE_GP_CONFIG,
         buffer_type='ivs',
         variance_scaling_alpha=0.0,
         async_hp_updates=use_async,
@@ -216,7 +217,6 @@ def _base_ivs_config(
         recency_weight=0.65,
         recency_decay_rate=0.12,
         buffer_min_distance=0.02,
-        buffer_merge_min_distance=0.025,
         buffer_level_capacities=_allocate_level_capacities(buffer_size),
         buffer_level_sparsity=[1, 3, 6],
         gp_kernel='rbf',
@@ -304,7 +304,9 @@ def _make_record(study: str, variant: str, cfg: OnlineGPConfig, metrics: Dict, *
         "level_capacities": "-".join(str(int(c)) for c in caps) if caps else "",
         "level_sparsity": "-".join(str(int(s)) for s in sparsity) if sparsity else "",
         "buffer_min_distance": float(getattr(cfg, "buffer_min_distance", np.nan)),
-        "buffer_merge_min_distance": float(getattr(cfg, "buffer_merge_min_distance", np.nan)),
+        "buffer_local_dup_cap": int(getattr(cfg, "buffer_local_dup_cap", 0)),
+        "buffer_close_update_v_ratio": float(getattr(cfg, "buffer_close_update_v_ratio", np.nan)),
+        "buffer_close_update_y_threshold": float(getattr(cfg, "buffer_close_update_y_threshold", np.nan)),
         "train_mode": str(extra.get("train_mode", "sync")),
         "gp_device": str(extra.get("gp_device", "auto")),
         "latency_metric": str(extra.get("latency_metric", "control")),
@@ -446,23 +448,22 @@ def run_distance_sensitivity(
 ) -> List[Dict]:
     vals = _study_values(mode)["distance"]
     min_distances = vals["min_distance"]
-    merge_ratios = vals["merge_ratio"]
+    local_dup_caps = vals["local_dup_cap"]
     records = []
 
     for min_d in min_distances:
-        for ratio in merge_ratios:
+        for dup_cap in local_dup_caps:
             if not _consume_budget(run_budget):
                 return records
-            merge_d = float(min_d) * float(ratio)
             cfg = _base_ivs_config(buffer_size=14, train_mode=train_mode, gp_device=gp_device)
             cfg = replace(
                 cfg,
                 buffer_type='ivs',
                 ivs_multilevel=True,
                 buffer_min_distance=float(min_d),
-                buffer_merge_min_distance=float(merge_d),
+                buffer_local_dup_cap=int(dup_cap),
             )
-            name = f"dist{min_d:.3f}_merge{merge_d:.3f}"
+            name = f"dist{min_d:.3f}_cap{int(dup_cap)}"
             print(f"[distance] Running {name} ...")
             metrics = _run_variant(
                 variant_name=name,
@@ -481,7 +482,7 @@ def run_distance_sensitivity(
                         name,
                         cfg,
                         metrics,
-                        level_profile=f"merge_ratio_{ratio:.2f}",
+                        level_profile=f"dup_cap_{int(dup_cap)}",
                         train_mode=train_mode,
                         gp_device=gp_device,
                         latency_metric=latency_metric,
@@ -587,8 +588,9 @@ def run_sobol_sensitivity(
     ]
 
     # dimensions:
-    # [novelty, decay, min_distance, merge_ratio, buffer_size, level_profile_idx, kernel_idx]
-    unit, source = _unit_sobol_samples(n_points=n_points, dim=7, seed=seed_base + 17)
+    # [novelty, decay, min_distance, local_dup_cap, buffer_size,
+    #  level_profile_idx, kernel_idx, close_update_v_ratio, close_update_y_threshold]
+    unit, source = _unit_sobol_samples(n_points=n_points, dim=9, seed=seed_base + 17)
     records = []
     for i, u in enumerate(unit):
         if not _consume_budget(run_budget):
@@ -596,13 +598,14 @@ def run_sobol_sensitivity(
 
         novelty = 0.05 + float(u[0]) * (0.85 - 0.05)
         decay = 0.03 + float(u[1]) * (0.35 - 0.03)
-        min_distance = 0.003 + float(u[2]) * (0.046 - 0.003)
-        merge_ratio = 1.0 + float(u[3]) * (2.0 - 1.0)
-        merge_distance = min_distance * merge_ratio
+        min_distance = 0.006 + float(u[2]) * (0.040 - 0.006)
+        local_dup_cap = int(round(2 + float(u[3]) * (8 - 2)))
         buffer_size = int(round(10 + float(u[4]) * (26 - 10)))
 
         p_idx = min(len(level_profiles) - 1, int(float(u[5]) * len(level_profiles)))
         k_idx = min(len(kernel_choices) - 1, int(float(u[6]) * len(kernel_choices)))
+        close_v_ratio = 0.15 + float(u[7]) * (0.60 - 0.15)
+        close_y_threshold = 0.015 + float(u[8]) * (0.08 - 0.015)
         profile = level_profiles[p_idx]
         kernel_spec = kernel_choices[k_idx]
 
@@ -616,7 +619,9 @@ def run_sobol_sensitivity(
             recency_weight=float(1.0 - novelty),
             recency_decay_rate=float(decay),
             buffer_min_distance=float(min_distance),
-            buffer_merge_min_distance=float(merge_distance),
+            buffer_local_dup_cap=int(np.clip(local_dup_cap, 2, 8)),
+            buffer_close_update_v_ratio=float(close_v_ratio),
+            buffer_close_update_y_threshold=float(close_y_threshold),
             buffer_level_capacities=caps,
             buffer_level_sparsity=sparsity,
             gp_kernel=str(kernel_spec["kernel"]),
@@ -663,7 +668,8 @@ def save_records_csv(records: List[Dict], out_path: str) -> None:
     fieldnames = [
         "study", "variant", "baseline_tag",
         "novelty_weight", "recency_weight", "recency_decay_rate",
-        "buffer_max_size", "buffer_min_distance", "buffer_merge_min_distance",
+        "buffer_max_size", "buffer_min_distance", "buffer_local_dup_cap",
+        "buffer_close_update_v_ratio", "buffer_close_update_y_threshold",
         "level_profile", "level_capacities", "level_sparsity",
         "gp_kernel", "gp_matern_nu",
         "train_mode", "gp_device", "latency_metric",
@@ -767,20 +773,19 @@ def plot_distance_sensitivity(records: List[Dict], out_dir: str) -> None:
     if not rows:
         return
 
-    ratio_to_rows: Dict[str, List[Dict]] = {}
+    cap_to_rows: Dict[str, List[Dict]] = {}
     for r in rows:
-        ratio = float(r["buffer_merge_min_distance"]) / max(float(r["buffer_min_distance"]), 1e-9)
-        key = f"{ratio:.2f}"
-        ratio_to_rows.setdefault(key, []).append(r)
+        key = str(int(r["buffer_local_dup_cap"]))
+        cap_to_rows.setdefault(key, []).append(r)
 
     fig, axes = plt.subplots(1, 2, figsize=(7.2, 2.8))
-    for idx, (ratio, r_rows) in enumerate(sorted(ratio_to_rows.items(), key=lambda kv: float(kv[0]))):
+    for idx, (cap, r_rows) in enumerate(sorted(cap_to_rows.items(), key=lambda kv: int(kv[0]))):
         r_rows = sorted(r_rows, key=lambda r: float(r["buffer_min_distance"]))
         x = [float(r["buffer_min_distance"]) for r in r_rows]
         y_rmse = [float(r["rmse_mean"]) for r in r_rows]
         y_lat = [float(r["latency_mean"]) * 1000.0 for r in r_rows]
         color = SCI_COLORS[idx % len(SCI_COLORS)]
-        label = f"merge/min={float(ratio):.2f}"
+        label = f"local_dup_cap={int(cap)}"
         axes[0].plot(x, y_rmse, marker="o", linewidth=1.2, color=color, label=label)
         axes[1].plot(x, y_lat, marker="o", linewidth=1.2, color=color, label=label)
 
@@ -888,7 +893,9 @@ def plot_sobol_rankcorr(records: List[Dict], out_dir: str) -> None:
         "decay": np.array([float(r["recency_decay_rate"]) for r in rows], dtype=float),
         "buf_size": np.array([float(r["buffer_max_size"]) for r in rows], dtype=float),
         "min_dist": np.array([float(r["buffer_min_distance"]) for r in rows], dtype=float),
-        "merge_dist": np.array([float(r["buffer_merge_min_distance"]) for r in rows], dtype=float),
+        "dup_cap": np.array([float(r["buffer_local_dup_cap"]) for r in rows], dtype=float),
+        "close_vr": np.array([float(r["buffer_close_update_v_ratio"]) for r in rows], dtype=float),
+        "close_yt": np.array([float(r["buffer_close_update_y_threshold"]) for r in rows], dtype=float),
     }
     rmse = np.array([float(r["rmse_mean"]) for r in rows], dtype=float)
     latency = np.array([float(r["latency_mean"]) for r in rows], dtype=float)
@@ -948,7 +955,7 @@ def main():
     parser.add_argument("--mode", type=str, default="smoke", choices=["smoke", "quick", "full"])
     parser.add_argument("--studies", type=str, default="novelty_decay,levels,distance,kernel,sobol",
                         help="Comma-separated: novelty_decay,levels,distance,kernel,sobol")
-    parser.add_argument("--speed", type=float, default=2.7)
+    parser.add_argument("--speed", type=float, default=3.0)
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
     parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"])
     parser.add_argument("--seeds", type=int, default=1)

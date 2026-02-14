@@ -5,7 +5,7 @@ This script narrows the comparison to online buffer strategies under
 full GP trust (variance_scaling_alpha = 0), to isolate the effect of
 the data-flow management policy itself.
 
-Run: python src/experiments/ablation_experiment.py --speed 2.7
+Run: python src/experiments/ablation_experiment.py --speed 3.0
 """
 import numpy as np
 import multiprocessing
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from dataclasses import replace
 
 from config.configuration_parameters import SimpleSimConfig
-from config.gp_config import OnlineGPConfig
+from config.gp_config import DEFAULT_ONLINE_GP_CONFIG
 from config.paths import DEFAULT_MODEL_VERSION, DEFAULT_MODEL_NAME
 
 import warnings
@@ -48,15 +48,16 @@ def get_ablation_configs(preset="baseline"):
 
     All use alpha=0 (full GP trust) to remove variance-scaling effects.
     """
-    base_gp_config = OnlineGPConfig()
+    # 统一从集中配置派生，确保与 online gp/buffer 模块保持同步。
+    base_gp_config = replace(DEFAULT_ONLINE_GP_CONFIG)
     alpha = 0.0
 
     if preset == "contrast":
         # Controlled stress preset: keep both methods trainable while
-        # shrinking memory and amplifying IVS's strength in sparse coverage.
+        # shrinking memory and amplifying IVS's sparse-coverage advantage.
         common = dict(
-            buffer_max_size=14,
-            min_points_for_initial_train=10,  # must stay <= buffer size
+            buffer_max_size=12,
+            min_points_for_initial_train=8,  # must stay <= buffer size
             refit_hyperparams_interval=6,
             worker_train_iters=24,
             recency_decay_rate=0.12,
@@ -71,20 +72,16 @@ def get_ablation_configs(preset="baseline"):
             base_gp_config,
             buffer_type='ivs',
             variance_scaling_alpha=alpha,
-            novelty_weight=0.45,
-            recency_weight=0.55,
-            buffer_min_distance=0.02,
-            buffer_merge_min_distance=0.025,
+            novelty_weight=0.58,
+            recency_weight=0.42,
+            buffer_min_distance=0.028,
             ivs_multilevel=True,
-            buffer_level_capacities=[8, 4, 2],
-            buffer_level_sparsity=[1, 3, 6],
+            buffer_level_capacities=[7, 3, 2],
+            buffer_level_sparsity=[1, 2, 5],
+            buffer_local_dup_cap=3,
+            buffer_close_update_v_ratio=0.25,
+            buffer_close_update_y_threshold=0.025,
             **common,
-        )
-        ivs_single_gp = replace(
-            ivs_gp,
-            ivs_multilevel=False,
-            buffer_min_distance=0.015,
-            buffer_merge_min_distance=0.015,
         )
         ivs_novelty0_gp = replace(
             ivs_gp,
@@ -100,12 +97,6 @@ def get_ablation_configs(preset="baseline"):
         ivs_gp = replace(
             base_gp_config,
             buffer_type='ivs',
-            variance_scaling_alpha=alpha,
-        )
-        ivs_single_gp = replace(
-            base_gp_config,
-            buffer_type='ivs',
-            ivs_multilevel=False,
             variance_scaling_alpha=alpha,
         )
         ivs_novelty0_gp = replace(
@@ -138,13 +129,6 @@ def get_ablation_configs(preset="baseline"):
             "gp_config": ivs_novelty0_gp,
             "solver_options": {"variance_scaling_alpha": alpha},
         },
-        "ar_mpc_ivs_singlelevel": {
-            "description": "AR-MPC (IVS single-level, alpha=0)",
-            "use_offline_gp": True,
-            "use_online_gp": True,
-            "gp_config": ivs_single_gp,
-            "solver_options": {"variance_scaling_alpha": alpha},
-        },
     }
 
 
@@ -157,7 +141,7 @@ def _set_global_seed(seed: int, seed_cuda: bool = False) -> None:
             torch.cuda.manual_seed_all(seed)
 
 
-def run_single_ablation(config_name, config, speed=2.7, trajectory_type="random",
+def run_single_ablation(config_name, config, speed=3.0, trajectory_type="random",
                         seed=303, wind_profile="default"):
     """
     Run single ablation using the proven prepare_quadrotor_mpc and main functions.
@@ -416,7 +400,7 @@ def plot_ablation_results(results, speed, save_dir="outputs/figures"):
             plt.close(fig3)
 
 
-def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize=True,
+def run_ablation_study(speed=3.0, trajectory_type="random", n_seeds=1, visualize=True,
                        wind_profile="default", seed_base=303, preset="baseline"):
     """Run complete ablation study."""
     print("=" * 70)
@@ -433,7 +417,6 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
     # Define order of execution/plotting
     ordered_keys = [
         "ar_mpc_fifo",
-        "ar_mpc_ivs_singlelevel",
         "ar_mpc_ivs",
         "ar_mpc_ivs_novelty0",
     ]
@@ -462,6 +445,9 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
         if seed_results:
             rmse_values = [r["rmse"] for r in seed_results]
             max_vel_values = [r["max_vel"] for r in seed_results]
+            ctrl_values = [r.get("control_time", np.nan) for r in seed_results]
+            solve_values = [r.get("opt_time", np.nan) for r in seed_results]
+            update_values = [r.get("gp_update_time", np.nan) for r in seed_results]
             rmse_mean = float(np.mean(rmse_values))
             rmse_std = float(np.std(rmse_values))
 
@@ -469,11 +455,15 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
                 "rmse": rmse_mean,
                 "rmse_std": rmse_std,
                 "max_vel": float(np.mean(max_vel_values)),
+                "control_time": float(np.nanmean(ctrl_values)),
+                "solve_time": float(np.nanmean(solve_values)),
+                "update_time": float(np.nanmean(update_values)),
                 "description": config['description']
             }
             print(
                 f"  RMSE(mean±std): {rmse_mean:.4f} ± {rmse_std:.4f} m, "
-                f"Max Vel(mean): {np.mean(max_vel_values):.2f} m/s"
+                f"Max Vel(mean): {np.mean(max_vel_values):.2f} m/s, "
+                f"Control(mean): {np.nanmean(ctrl_values)*1000.0:.2f} ms"
             )
         else:
             print(f"  Failed to run {config_name}")
@@ -483,7 +473,7 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
         print("\n" + "=" * 70)
         print("Summary Table")
         print("=" * 70)
-        print(f"{'Configuration':<35} {'RMSE mean±std (m)':<24} {'Max Vel (m/s)':<15}")
+        print(f"{'Configuration':<35} {'RMSE mean±std (m)':<24} {'Ctrl (ms)':<10} {'Max Vel (m/s)':<15}")
         print("-" * 70)
         for config_name in ordered_keys:
             if config_name in results:
@@ -491,6 +481,7 @@ def run_ablation_study(speed=2.7, trajectory_type="random", n_seeds=1, visualize
                 print(
                     f"{result['description']:<35} "
                     f"{result['rmse']:.4f}±{result.get('rmse_std', 0.0):.4f}{'':<8} "
+                    f"{result.get('control_time', np.nan)*1000.0:<10.2f} "
                     f"{result['max_vel']:<15.2f}"
                 )
         
@@ -510,7 +501,7 @@ if __name__ == "__main__":
 
     import argparse
     parser = argparse.ArgumentParser(description="Ablation study for FIFO vs IVS (alpha=0)")
-    parser.add_argument("--speed", type=float, default=3.5, help="Average trajectory speed (m/s)")
+    parser.add_argument("--speed", type=float, default=3.0, help="Average trajectory speed (m/s)")
     parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
     parser.add_argument("--seeds", type=int, default=1, help="Number of Monte Carlo seeds")
     parser.add_argument("--seed-base", type=int, default=303, help="Base random seed")

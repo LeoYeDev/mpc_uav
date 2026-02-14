@@ -31,7 +31,6 @@ from src.visualization.paper_plots import plot_tracking_error_comparison
 from src.visualization.gp_online import visualize_gp_snapshot
 from src.gp.rdrv import load_rdrv
 from src.gp.utils import world_to_body_velocity_mapping
-from src.gp.utils import world_to_body_velocity_mapping
 from src.gp.online import IncrementalGPManager
 from src.utils.data_logger import DataLogger
 
@@ -111,7 +110,8 @@ def prepare_quadrotor_mpc(simulation_options, version=None, name=None, reg_type=
 def main(quad_mpc, av_speed, reference_type=None, plot=False,
          use_offline_gp=False, use_online_gp=False, 
          online_gp_manager=None, model_label="nominal",
-         wind_profile="default", trajectory_seed=303):
+         wind_profile="default", trajectory_seed=303,
+         online_gp_pred_points=7):
     """
     Run tracking experiment with unified configuration.
 
@@ -178,8 +178,12 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     # Latency accounting:
     # 1) MPC optimize solve time only
     # 2) Online GP update/poll overhead
+    # 3) Full control compute pipeline (excluding plant propagation/sleep)
     mpc_opt_time_acc = 0.0
     gp_update_time_acc = 0.0
+    control_compute_time_acc = 0.0
+    control_pre_sim_time_acc = 0.0
+    control_post_sim_time_acc = 0.0
 
     # Measure total simulation time
     total_sim_time = 0.0
@@ -188,7 +192,6 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     simulation_time = 0.0
 
     # --- Online GP Manager and History Lists Initialization (Moved outside the main while loop) ---
-    snapshot_visualization_done = False
     history_gp_input_velocities = [] 
     history_gp_target_residuals = [] 
     history_timestamps_for_gp = []  # 记录时间戳
@@ -196,9 +199,12 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     out_online_gp_manager = None  # 用于快照可视化的在线GP管理器
     out_x_pred = None
     out_total_sim_time = 0.0
+    out_snapshot_quality = None
+    best_snapshot_score = -1.0
     visualized_all = False
 
     while (time.time() - start_time) < max_simulation_time and current_idx < reference_traj.shape[0]:
+        iter_compute_start = time.perf_counter()
 
         quad_current_state = my_quad.get_state(quaternion=True, stacked=True)
 
@@ -219,16 +225,27 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         online_variances = None
         
         # Check if we should use online GP predictions
+        effective_query_velocities = None
         if online_gp_manager and use_online_gp and any(gp.is_trained_once for gp in online_gp_manager.gps):
             # 1. 使用上一步MPC规划的轨迹(x_pred)作为对未来状态的近似
             # 2. 将世界系速度转换为机体坐标系速度
             planned_states_body = world_to_body_velocity_mapping(x_pred)
             planned_velocities_body = planned_states_body[:, 7:10]
-            
-            # 3. 调用在线GP进行预测 (同时获取均值和方差)
-            predicted_residuals, predicted_variances = online_gp_manager.predict(planned_velocities_body)
-            online_predictions = predicted_residuals
-            online_variances = predicted_variances  # 用于MPC方差成本惩罚
+            n_plan = int(planned_velocities_body.shape[0])
+            k_pred = int(np.clip(int(online_gp_pred_points), 1, n_plan))
+            effective_query_velocities = planned_velocities_body[:k_pred, :]
+
+            # 3. 在线GP仅预测前k个节点，尾部节点使用最后一个预测值进行平滑外推，
+            #    以减少远期强外推对MPC的负面影响。
+            predicted_residuals_k, predicted_variances_k = online_gp_manager.predict(effective_query_velocities)
+            if k_pred < n_plan:
+                online_predictions = np.tile(predicted_residuals_k[-1, :], (n_plan, 1))
+                online_variances = np.tile(predicted_variances_k[-1, :], (n_plan, 1))
+                online_predictions[:k_pred, :] = predicted_residuals_k
+                online_variances[:k_pred, :] = predicted_variances_k
+            else:
+                online_predictions = predicted_residuals_k
+                online_variances = predicted_variances_k
         # ========================================================================
 
         # Optimize control input to reach pre-set target
@@ -241,9 +258,61 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         # Select first input (one for each motor) - MPC applies only first optimized input to the plant
         ref_u = np.squeeze(np.array(w_opt[:4]))
 
-        if len(quad_trajectory) > 0 and plot and current_idx > 0:
-            draw_drone_simulation(real_time_artists, quad_trajectory[:current_idx, :], my_quad, targets=None,
-                                  targets_reached=None, pred_traj=x_pred, x_pred_cov=None)
+        # 可视化快照候选：选择“规划速度落在当前训练覆盖范围内比例更高”的时刻，
+        # 避免展示明显超出学习区间的预测点。
+        if (
+            online_gp_manager and use_online_gp and x_pred is not None
+            and any(gp.is_trained_once for gp in online_gp_manager.gps)
+            and effective_query_velocities is not None
+        ):
+            try:
+                future_velocities = np.array(effective_query_velocities, copy=False)
+                dim_mix_scores = []
+                dim_span_scores = []
+                dim_in_ratios = []
+                valid_dim_count = 0
+                mixed_dim_count = 0
+                for dim_idx, gp in enumerate(online_gp_manager.gps):
+                    train_data = gp.buffer.get_training_set()
+                    if len(train_data) < 8:
+                        continue
+                    vx = np.array([p[0] for p in train_data], dtype=float)
+                    qv = future_velocities[:, dim_idx]
+                    v_min, v_max = float(np.min(vx)), float(np.max(vx))
+                    span = max(v_max - v_min, 1e-6)
+                    margin = 0.10 * span
+                    in_range = (qv >= (v_min - margin)) & (qv <= (v_max + margin))
+                    in_ratio = float(np.mean(in_range))
+                    valid_dim_count += 1
+                    dim_in_ratios.append(in_ratio)
+                    # 目标是“内插与外推并存”，希望比例在中间区间。
+                    target_ratio = 0.60
+                    mix_score = max(0.0, 1.0 - abs(in_ratio - target_ratio) / target_ratio)
+                    if 0.20 <= in_ratio <= 0.85:
+                        mixed_dim_count += 1
+                    dim_mix_scores.append(mix_score)
+                    dim_span_scores.append(float(np.max(qv) - np.min(qv)))
+
+                if valid_dim_count > 0:
+                    mixed_dim_ratio = mixed_dim_count / float(valid_dim_count)
+                    score = (
+                        2.0 * mixed_dim_ratio
+                        + float(np.mean(dim_mix_scores))
+                        + 0.15 * np.log1p(float(np.mean(dim_span_scores)))
+                    )
+                    if score >= best_snapshot_score:
+                        best_snapshot_score = score
+                        out_online_gp_manager = online_gp_manager
+                        out_x_pred = np.array(x_pred, copy=True)
+                        out_total_sim_time = float(total_sim_time)
+                        out_snapshot_quality = {
+                            "mixed_dim_ratio": float(mixed_dim_ratio),
+                            "mean_in_ratio": float(np.mean(dim_in_ratios)),
+                            "mean_pred_span": float(np.mean(dim_span_scores)),
+                            "pred_points_used": int(future_velocities.shape[0]),
+                        }
+            except Exception:
+                pass
 
         simulation_time = 0.0
         
@@ -260,6 +329,14 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
         # 直接将当前13维状态向量传入 (时间)
         ext_v_k = wind_model.get_wind_velocity(total_sim_time)
         # ---------------------------------------------
+        pre_sim_elapsed = time.perf_counter() - iter_compute_start
+        control_compute_time_acc += pre_sim_elapsed
+        control_pre_sim_time_acc += pre_sim_elapsed
+
+        # 可视化绘制不计入控制计算时延统计。
+        if len(quad_trajectory) > 0 and plot and current_idx > 0:
+            draw_drone_simulation(real_time_artists, quad_trajectory[:current_idx, :], my_quad, targets=None,
+                                  targets_reached=None, pred_traj=x_pred, x_pred_cov=None)
 
         # ##### Simulation runtime (inner loop) ##### #
         while simulation_time < mpc_period:
@@ -269,6 +346,7 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
 
 
         # --- ADDED: 在线GP的数据收集与异步更新
+        post_sim_start = time.perf_counter()
         if online_gp_manager and use_online_gp: 
             #推演后的状态
             s_after_sim  = quad_mpc.get_state()
@@ -303,17 +381,10 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
 
             gp_update_time_acc += time.time() - update_start_time
             #print(f"在线GP更新耗时: {time.time() - update_start_time:.4f}s")
-
-            # --- 在初始优化后可视化GP拟合情况 (一次) ---
-            if total_sim_time >= 9.7 and not snapshot_visualization_done:
-                # 检查是否有任何一个GP维度已经训练过了
-                if any(gp.is_trained_once for gp in online_gp_manager.gps):
-                    out_online_gp_manager = online_gp_manager
-                    out_x_pred = x_pred
-                    out_total_sim_time = total_sim_time
-                snapshot_visualization_done = True
-            # --- 初始优化后可视化结束 ---
         # --- END ADDED: Online GP Initialization ---
+        post_sim_elapsed = time.perf_counter() - post_sim_start
+        control_compute_time_acc += post_sim_elapsed
+        control_post_sim_time_acc += post_sim_elapsed
 
         u_optimized_seq[current_idx, :] = np.reshape(ref_u, (1, -1))
         current_idx += 1   
@@ -325,7 +396,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     # Average elapsed time per control step
     mean_opt_time = mpc_opt_time_acc / max(current_idx, 1)
     mean_gp_update_time = gp_update_time_acc / max(current_idx, 1)
-    mean_total_ctrl_time = mean_opt_time + mean_gp_update_time
+    mean_total_ctrl_time = control_compute_time_acc / max(current_idx, 1)
+    mean_pre_sim_ctrl_time = control_pre_sim_time_acc / max(current_idx, 1)
+    mean_post_sim_ctrl_time = control_post_sim_time_acc / max(current_idx, 1)
 
     rmse = interpol_mse(reference_timestamps, reference_traj[:, :3], reference_timestamps, quad_trajectory[:, :3])
     max_vel = np.max(np.sqrt(np.sum(reference_traj[:, 7:10] ** 2, 1)))
@@ -336,7 +409,9 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
     print(f'\n--- Simulation finished ---\n')
     print(f'Average optimization time (solve only): {mean_opt_time:.4f} s')
     print(f'Average online update overhead: {mean_gp_update_time:.4f} s')
-    print(f'Average control compute time (solve + online): {mean_total_ctrl_time:.4f} s')
+    print(f'Average control compute time (full pipeline, no sleep/sim): {mean_total_ctrl_time:.4f} s')
+    print(f'  - pre-sim compute: {mean_pre_sim_ctrl_time:.4f} s')
+    print(f'  - post-sim compute: {mean_post_sim_ctrl_time:.4f} s')
     print(f'RMSE: {rmse:.4f} m')
     print(f'Maximum velocity: {max_vel:.2f} m/s')
 
@@ -345,11 +420,21 @@ def main(quad_mpc, av_speed, reference_type=None, plot=False,
             wind_model.visualize() # 在仿真开始前调用可视化
         
         if out_online_gp_manager is not None:
+            if out_snapshot_quality is not None:
+                print(
+                    "[snapshot] selected time="
+                    f"{out_total_sim_time:.2f}s, mixed_dim_ratio="
+                    f"{out_snapshot_quality['mixed_dim_ratio']:.2f}, "
+                    f"mean_in_ratio={out_snapshot_quality['mean_in_ratio']:.2f}, "
+                    f"mean_pred_span={out_snapshot_quality['mean_pred_span']:.2f}, "
+                    f"pred_points={out_snapshot_quality['pred_points_used']}"
+                )
             visualize_gp_snapshot(
                 online_gp_manager=out_online_gp_manager,
                 # 使用当前的MPC预测轨迹来定义绘图的X轴范围
                 mpc_planned_states=out_x_pred, 
-                snapshot_info_str=f"In-Flight Snapshot @ SimTime {out_total_sim_time:.2f}s"
+                snapshot_info_str=f"In-Flight Snapshot @ SimTime {out_total_sim_time:.2f}s",
+                max_pred_points=int(online_gp_pred_points),
             )
             #out_online_gp_manager.visualize_training_history()
         
@@ -430,7 +515,7 @@ if __name__ == '__main__':
     # av_speed_vec = [[1.5,2.0,2.5,3.0,3.5],
     #                 [12.0],
     #                 [12.0]]
-    av_speed_vec = [[2.7],
+    av_speed_vec = [[3.0],
                     [12.0],
                     [12.0]]
     # traj_type_vec = [{"random": 1}, "loop", "lemniscate"]
@@ -510,10 +595,12 @@ if __name__ == '__main__':
                     t_ref,
                     x_ref,
                     x_executed,
-                    *_
+                    mean_gp_update_dt,
+                    mean_ctrl_dt,
                 ) = run_result
                 
-                t_opt[traj_id, v_id, n_train_id] += opt_dt
+                # 统一记录“完整控制计算时间”（不含sleep/仿真推进）。
+                t_opt[traj_id, v_id, n_train_id] += mean_ctrl_dt
                 if v_max[traj_id, v_id] == 0:
                     v_max[traj_id, v_id] = traj_v
 

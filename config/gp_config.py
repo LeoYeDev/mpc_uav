@@ -46,6 +46,8 @@ class OnlineGPConfig:
         out_cluster_penalty: 非主簇评分惩罚系数
         target_size_slack: 训练集下界松弛，最终大小范围 N-slack..N
         buffer_local_dup_cap: 同一速度邻域允许的最大局部样本数
+        buffer_close_update_v_ratio: 近邻快速更新速度阈值比例（相对 buffer_min_distance）
+        buffer_close_update_y_threshold: 近邻快速更新残差阈值（绝对值）
         
         # Ablation switches (消融开关)
         buffer_type: 缓冲区类型 ('ivs' 信息值选择 / 'fifo' 先进先出)
@@ -69,6 +71,8 @@ class OnlineGPConfig:
     out_cluster_penalty: float = 0.20
     target_size_slack: int = 1
     buffer_local_dup_cap: int = 4
+    buffer_close_update_v_ratio: float = 0.35
+    buffer_close_update_y_threshold: float = 0.03
     error_threshold: float = 0.15
     min_points_for_initial_train: int = 15
     refit_hyperparams_interval: int = 10
@@ -105,6 +109,8 @@ class OnlineGPConfig:
             'out_cluster_penalty': self.out_cluster_penalty,
             'target_size_slack': self.target_size_slack,
             'buffer_local_dup_cap': self.buffer_local_dup_cap,
+            'buffer_close_update_v_ratio': self.buffer_close_update_v_ratio,
+            'buffer_close_update_y_threshold': self.buffer_close_update_y_threshold,
             'error_threshold': self.error_threshold,
             'min_points_for_initial_train': self.min_points_for_initial_train,
             'refit_hyperparams_interval': self.refit_hyperparams_interval,

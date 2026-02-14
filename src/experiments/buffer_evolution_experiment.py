@@ -11,7 +11,7 @@ Example:
   python src/experiments/buffer_evolution_experiment.py \
     --methods fifo,ivs \
     --trajectory random \
-    --speed 2.7 \
+    --speed 3.0 \
     --max-steps 250 \
     --frame-stride 2 \
     --format gif
@@ -36,13 +36,13 @@ except ImportError:  # pragma: no cover
     torch = None
 
 from config.configuration_parameters import SimpleSimConfig
-from config.gp_config import OnlineGPConfig
+from config.gp_config import DEFAULT_ONLINE_GP_CONFIG, OnlineGPConfig
 from config.paths import DEFAULT_MODEL_VERSION, DEFAULT_MODEL_NAME
 from src.experiments.comparative_experiment import prepare_quadrotor_mpc
 from src.gp.online import IncrementalGPManager
 from src.gp.utils import world_to_body_velocity_mapping
 from src.utils.quad_3d_opt_utils import get_reference_chunk
-from src.utils.utils import separate_variables
+from src.utils.utils import interpol_mse, separate_variables
 from src.utils.wind_model import RealisticWindModel
 from src.utils.trajectories import random_trajectory, loop_trajectory, lemniscate_trajectory
 
@@ -59,51 +59,22 @@ def _set_seed(seed: int) -> None:
         torch.manual_seed(seed)
 
 
-def _allocate_level_capacities(total_size: int) -> List[int]:
-    total_size = int(max(3, total_size))
-    c0 = max(2, int(round(total_size * 0.55)))
-    c1 = max(1, int(round(total_size * 0.30)))
-    c2 = max(1, total_size - c0 - c1)
-    while c0 + c1 + c2 > total_size:
-        if c0 >= c1 and c0 >= c2 and c0 > 1:
-            c0 -= 1
-        elif c1 >= c2 and c1 > 1:
-            c1 -= 1
-        elif c2 > 1:
-            c2 -= 1
-        else:
-            break
-    while c0 + c1 + c2 < total_size:
-        c0 += 1
-    return [c0, c1, c2]
-
-
 def _build_gp_config(method: str, args: argparse.Namespace) -> OnlineGPConfig:
+    """
+    构建在线 GP 配置（与核心 Online GP 模块保持严格同步）。
+
+    这里不再在脚本内定义或覆盖 buffer 超参数，统一复用：
+    `config/gp_config.py` 里的 `DEFAULT_ONLINE_GP_CONFIG`。
+    """
     method = method.lower().strip()
-    recency = max(0.0, 1.0 - float(args.novelty_weight))
-    base = OnlineGPConfig(
-        buffer_type='ivs',
+    base = replace(
+        DEFAULT_ONLINE_GP_CONFIG,
         async_hp_updates=bool(args.async_updates),
-        variance_scaling_alpha=0.0,
-        buffer_max_size=int(args.buffer_size),
-        min_points_for_initial_train=min(int(args.buffer_size), int(args.min_points)),
-        refit_hyperparams_interval=int(args.refit_interval),
-        worker_train_iters=int(args.worker_train_iters),
-        novelty_weight=float(args.novelty_weight),
-        recency_weight=float(recency),
-        recency_decay_rate=float(args.decay_rate),
-        buffer_min_distance=float(args.min_distance),
-        buffer_merge_min_distance=float(args.merge_min_distance),
-        ivs_multilevel=bool(args.ivs_multilevel),
-        buffer_level_capacities=_allocate_level_capacities(int(args.buffer_size)),
-        buffer_level_sparsity=[1, 3, 6],
-        gp_kernel=str(args.gp_kernel),
-        gp_matern_nu=float(args.gp_matern_nu),
     )
     if method == "fifo":
         return replace(base, buffer_type="fifo", ivs_multilevel=False)
     if method == "ivs":
-        return replace(base, buffer_type="ivs", ivs_multilevel=bool(args.ivs_multilevel))
+        return replace(base, buffer_type="ivs", ivs_multilevel=True)
     raise ValueError(f"Unsupported method: {method}")
 
 
@@ -155,6 +126,12 @@ def _capture_buffer_snapshot(manager: IncrementalGPManager, step: int, sim_time:
         # refresh merged cache for multilevel buffer
         _ = gp.buffer.get_training_set()
         merged = [(float(v), float(y), float(t)) for (v, y, t) in getattr(gp.buffer, "data", [])]
+        diagnostics = {}
+        if hasattr(gp.buffer, "get_diagnostics"):
+            try:
+                diagnostics = gp.buffer.get_diagnostics() or {}
+            except Exception:
+                diagnostics = {}
         levels = []
         if hasattr(gp.buffer, "levels"):
             for level in gp.buffer.levels:
@@ -165,6 +142,8 @@ def _capture_buffer_snapshot(manager: IncrementalGPManager, step: int, sim_time:
                 "levels": levels,
                 "trained": bool(gp.is_trained_once),
                 "training_in_progress": bool(gp.is_training_in_progress),
+                "main_cluster_ratio": float(diagnostics.get("main_cluster_ratio", np.nan)),
+                "selected_size": int(diagnostics.get("selected_size", len(merged))),
             }
         )
     return {"step": int(step), "time": float(sim_time), "dims": dims}
@@ -212,6 +191,9 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
     total_sim_time = 0.0
     x_pred = None
     snapshots: List[Dict] = []
+    # 记录执行轨迹，用于计算与 comparative_experiment 一致口径的 RMSE。
+    exec_traj = np.zeros((max_steps + 1, reference_traj.shape[1]), dtype=float)
+    exec_traj[0, :] = my_quad.get_state(quaternion=True, stacked=True)
 
     try:
         while current_idx < max_steps:
@@ -268,9 +250,21 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
             manager.poll_for_results()
 
             snapshots.append(_capture_buffer_snapshot(manager, current_idx, total_sim_time))
+            exec_traj[current_idx + 1, :] = my_quad.get_state(quaternion=True, stacked=True)
             current_idx += 1
     finally:
         manager.shutdown()
+
+    eval_len = int(min(max_steps + 1, reference_traj.shape[0]))
+    rmse = float(
+        interpol_mse(
+            reference_timestamps[:eval_len],
+            reference_traj[:eval_len, :3],
+            reference_timestamps[:eval_len],
+            exec_traj[:eval_len, :3],
+        )
+    )
+    max_vel = float(np.max(np.sqrt(np.sum(reference_traj[:eval_len, 7:10] ** 2, axis=1))))
 
     return {
         "method": method_key,
@@ -280,6 +274,8 @@ def run_buffer_trace(method: str, args: argparse.Namespace) -> Dict:
         "max_steps": int(max_steps),
         "frame_stride": int(args.frame_stride),
         "seed": int(args.seed),
+        "rmse": rmse,
+        "max_vel": max_vel,
         "snapshots": snapshots,
     }
 
@@ -482,6 +478,8 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
         "sim_time",
         "dim",
         "merged_count",
+        "selected_size",
+        "main_cluster_ratio",
         "trained",
         "training_in_progress",
     ] + level_cols
@@ -497,6 +495,12 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
                     "sim_time": f"{snap['time']:.6f}",
                     "dim": DIM_LABELS[d],
                     "merged_count": len(dim_snap["merged"]),
+                    "selected_size": int(dim_snap.get("selected_size", len(dim_snap["merged"]))),
+                    "main_cluster_ratio": (
+                        f"{float(dim_snap.get('main_cluster_ratio', np.nan)):.6f}"
+                        if np.isfinite(float(dim_snap.get("main_cluster_ratio", np.nan)))
+                        else ""
+                    ),
                     "trained": int(dim_snap["trained"]),
                     "training_in_progress": int(dim_snap["training_in_progress"]),
                 }
@@ -505,6 +509,37 @@ def save_trace_files(trace: Dict, out_dir: str) -> List[str]:
                     row[f"level{i}_count"] = count
                 writer.writerow(row)
     return [pkl_path, csv_path]
+
+
+def save_rmse_summary(traces: Dict[str, Dict], methods: List[str], out_dir: str) -> str:
+    """
+    保存 FIFO/IVS 的 RMSE 对比摘要（CSV），便于论文表格直接引用。
+    """
+    csv_path = os.path.join(out_dir, "buffer_evolution_rmse_summary.csv")
+    fieldnames = ["method", "rmse_m", "max_ref_speed_mps", "delta_vs_fifo_m", "improvement_vs_fifo_pct"]
+
+    fifo_rmse = float(traces["fifo"]["rmse"]) if "fifo" in traces else np.nan
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for method in methods:
+            rmse = float(traces[method]["rmse"])
+            delta = rmse - fifo_rmse if np.isfinite(fifo_rmse) else np.nan
+            improve_pct = (
+                (fifo_rmse - rmse) / fifo_rmse * 100.0
+                if np.isfinite(fifo_rmse) and fifo_rmse > 1e-12
+                else np.nan
+            )
+            writer.writerow(
+                {
+                    "method": method,
+                    "rmse_m": f"{rmse:.6f}",
+                    "max_ref_speed_mps": f"{float(traces[method]['max_vel']):.6f}",
+                    "delta_vs_fifo_m": f"{delta:.6f}" if np.isfinite(delta) else "",
+                    "improvement_vs_fifo_pct": f"{improve_pct:.3f}" if np.isfinite(improve_pct) else "",
+                }
+            )
+    return csv_path
 
 
 def parse_methods(methods_arg: str) -> List[str]:
@@ -522,40 +557,33 @@ def parse_methods(methods_arg: str) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize FIFO/IVS buffer evolution during trajectory tracking.")
-    parser.add_argument("--methods", type=str, default="fifo,ivs", help="Comma-separated: fifo,ivs")
-    parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"])
-    parser.add_argument("--speed", type=float, default=2.7)
-    parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"])
-    parser.add_argument("--seed", type=int, default=303)
-    parser.add_argument("--max-steps", type=int, default=500)
-    parser.add_argument("--frame-stride", type=int, default=2, help="Use every N-th snapshot frame.")
-    parser.add_argument("--fps", type=int, default=12)
-    parser.add_argument("--format", type=str, default="gif", choices=["gif", "mp4", "both"])
-    parser.add_argument("--out-dir", type=str, default="outputs/figures/buffer_evolution")
-    parser.add_argument("--no-video", action="store_true")
+    parser = argparse.ArgumentParser(description="可视化 FIFO/IVS 缓冲区点集演化，并输出 RMSE 对比结果。")
+    # 基础实验配置：轨迹、风场、随机种子、输出格式等。
+    parser.add_argument("--methods", type=str, default="fifo,ivs", help="对比方法（逗号分隔）：fifo,ivs")
+    parser.add_argument("--trajectory", type=str, default="random", choices=["random", "loop", "lemniscate"],
+                        help="参考轨迹类型：random / loop / lemniscate")
+    parser.add_argument("--speed", type=float, default=3.0, help="轨迹目标速度（m/s）")
+    parser.add_argument("--wind-profile", type=str, default="default", choices=["default", "regime_shift"],
+                        help="风场模式：default 或 regime_shift")
+    parser.add_argument("--seed", type=int, default=303, help="随机种子（用于可复现）")
+    parser.add_argument("--max-steps", type=int, default=500, help="控制步数上限")
+    parser.add_argument("--frame-stride", type=int, default=2, help="动画抽帧间隔（每 N 步取一帧）")
+    parser.add_argument("--fps", type=int, default=12, help="动画帧率")
+    parser.add_argument("--format", type=str, default="gif", choices=["gif", "mp4", "both"],
+                        help="视频导出格式：gif / mp4 / both")
+    parser.add_argument("--out-dir", type=str, default="outputs/figures/buffer_evolution",
+                        help="输出目录（缓存快照、统计CSV、RMSE摘要、动图）")
+    parser.add_argument("--no-video", action="store_true", help="仅导出数据，不渲染动画")
 
-    # Online GP / buffer config knobs
-    parser.add_argument("--async-updates", action="store_true", default=True)
-    parser.add_argument("--sync-updates", action="store_true", help="Force sync updates (debug only).")
-    parser.add_argument("--buffer-size", type=int, default=20)
-    parser.add_argument("--min-points", type=int, default=15)
-    parser.add_argument("--refit-interval", type=int, default=10)
-    parser.add_argument("--worker-train-iters", type=int, default=20)
-    parser.add_argument("--novelty-weight", type=float, default=0.35)
-    parser.add_argument("--decay-rate", type=float, default=0.10)
-    parser.add_argument("--min-distance", type=float, default=0.01)
-    parser.add_argument("--merge-min-distance", type=float, default=0.01)
-    parser.add_argument("--ivs-multilevel", action="store_true", default=True)
-    parser.add_argument("--singlelevel-ivs", action="store_true", help="Disable multilevel IVS.")
-    parser.add_argument("--gp-kernel", type=str, default="rbf")
-    parser.add_argument("--gp-matern-nu", type=float, default=2.5)
+    # 在线训练模式开关：
+    # 注意：除异步/同步外，其余 Online GP buffer 参数全部来自 DEFAULT_ONLINE_GP_CONFIG，
+    # 不再在本脚本中提供独立参数入口，确保与核心模块配置完全一致。
+    parser.add_argument("--async-updates", action="store_true", default=True, help="异步在线训练（默认）")
+    parser.add_argument("--sync-updates", action="store_true", help="同步在线训练（调试用）")
 
     args = parser.parse_args()
     if args.sync_updates:
         args.async_updates = False
-    if args.singlelevel_ivs:
-        args.ivs_multilevel = False
 
     methods = parse_methods(args.methods)
     out_dir = os.path.abspath(args.out_dir)
@@ -586,20 +614,25 @@ def main():
         saved_paths.extend(artifacts)
         print(f"  saved trace: {artifacts[0]}")
         print(f"  saved counts: {artifacts[1]}")
+        print(f"  RMSE: {trace['rmse']:.6f} m | MaxRefSpeed: {trace['max_vel']:.3f} m/s")
+
+    rmse_summary_path = save_rmse_summary(traces, methods, out_dir)
+    saved_paths.append(rmse_summary_path)
+    print(f"  saved rmse summary: {rmse_summary_path}")
+
+    if "fifo" in traces and "ivs" in traces:
+        fifo_rmse = float(traces["fifo"]["rmse"])
+        ivs_rmse = float(traces["ivs"]["rmse"])
+        delta = ivs_rmse - fifo_rmse
+        improve_pct = (fifo_rmse - ivs_rmse) / max(fifo_rmse, 1e-12) * 100.0
+        print("\nRMSE comparison:")
+        print(f"  FIFO RMSE: {fifo_rmse:.6f} m")
+        print(f"  IVS  RMSE: {ivs_rmse:.6f} m")
+        print(f"  IVS - FIFO: {delta:+.6f} m")
+        print(f"  IVS improvement over FIFO: {improve_pct:+.3f}%")
 
     if not args.no_video:
-        for method in methods:
-            rendered = render_method_animation(
-                trace=traces[method],
-                out_dir=out_dir,
-                frame_stride=int(args.frame_stride),
-                fps=int(args.fps),
-                out_format=args.format,
-            )
-            saved_paths.extend(rendered)
-            for p in rendered:
-                print(f"  saved animation: {p}")
-
+        # 为减少运行时长，仅渲染 FIFO vs IVS 的总对比动画，不再输出单方法动画。
         if len(methods) >= 2:
             rendered = render_comparison_animation(
                 traces=traces,
@@ -612,6 +645,8 @@ def main():
             saved_paths.extend(rendered)
             for p in rendered:
                 print(f"  saved comparison: {p}")
+        else:
+            print("  skip video: methods < 2，无法生成对比动画。")
 
     print("\nDone. Generated files:")
     for p in saved_paths:

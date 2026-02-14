@@ -33,6 +33,9 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
     try:
         planned_states_body = world_to_body_velocity_mapping(mpc_planned_states.copy())
         future_velocities_np = planned_states_body[:, 7:10]
+        max_pred_points = int(kwargs.get("max_pred_points", future_velocities_np.shape[0]))
+        max_pred_points = int(np.clip(max_pred_points, 1, future_velocities_np.shape[0]))
+        future_velocities_np = future_velocities_np[:max_pred_points, :]
     except Exception as e:
         print(f"⚠️ [可视化错误] 坐标变换失败: {e}")
         return
@@ -101,13 +104,22 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                        edgecolors=colors['train_bubble_edge'], linewidth=1.0, # 加粗边缘
                        label='Data', zorder=4)
 
-        # b) 绘制GP在训练数据范围内的拟合曲线
+        # c) 绘制MPC规划点的预测结果 (红色气泡)
+        pred_inputs_dim_i = future_velocities_np[:, i]
+        mean_pred_dim_i = mpc_plan_means[:, i]
+        std_pred_dim_i = np.sqrt(np.maximum(mpc_plan_vars[:, i], 1e-9))
+
+        # b) 绘制GP拟合曲线（包含训练区间与预测点区间，超出训练区间部分用虚线）
         if train_x_denorm is not None and train_x_denorm.size > 0 and gp._cached_norm_stats is not None:
             v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
-            x_min_plot, x_max_plot = train_x_denorm.min(), train_x_denorm.max()
+            x_train_min, x_train_max = float(train_x_denorm.min()), float(train_x_denorm.max())
+            x_pred_min, x_pred_max = float(np.min(pred_inputs_dim_i)), float(np.max(pred_inputs_dim_i))
+            x_min_plot = min(x_train_min, x_pred_min)
+            x_max_plot = max(x_train_max, x_pred_max)
             range_ext = (x_max_plot - x_min_plot) * 0.15
-            if abs(range_ext) < 1e-4: range_ext = 0.5
-            x_dense_denorm = np.linspace(x_min_plot - range_ext, x_max_plot + range_ext, 200)
+            if abs(range_ext) < 1e-4:
+                range_ext = 0.5
+            x_dense_denorm = np.linspace(x_min_plot - range_ext, x_max_plot + range_ext, 260)
             
             # 使用缓存的批量统计量进行归一化
             x_dense_norm = (x_dense_denorm - v_mean) / v_std
@@ -125,21 +137,67 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
             fit_mean_dim_i = mean_norm * r_std + r_mean
             fit_var_dim_i = var_norm * (r_std ** 2)
             fit_std_dim_i = np.sqrt(np.maximum(fit_var_dim_i, 1e-9))
+            ci_low = fit_mean_dim_i - 1.96 * fit_std_dim_i
+            ci_high = fit_mean_dim_i + 1.96 * fit_std_dim_i
 
-            ax.plot(x_dense_denorm, fit_mean_dim_i, color=colors['fit_mean'], lw=2, label='GP Fit', zorder=3) # 增加线宽
-            
-            ax.fill_between(x_dense_denorm, fit_mean_dim_i - 1.96 * fit_std_dim_i, fit_mean_dim_i + 1.96 * fit_std_dim_i,
-                            color=colors['fit_ci'], alpha=0.2, label='95% CI',zorder=2) # 增加透明度
+            # 训练覆盖区间内：实线；区间外（外推）：虚线
+            in_train = (x_dense_denorm >= x_train_min) & (x_dense_denorm <= x_train_max)
+            if np.any(in_train):
+                ax.plot(
+                    x_dense_denorm[in_train],
+                    fit_mean_dim_i[in_train],
+                    color=colors['fit_mean'],
+                    lw=2,
+                    label='GP Fit',
+                    zorder=3,
+                )
+            # 避免把左右两个外推段连成一条线跨越中间训练区间。
+            left_extrap = x_dense_denorm < x_train_min
+            right_extrap = x_dense_denorm > x_train_max
+            if np.any(left_extrap):
+                ax.plot(
+                    x_dense_denorm[left_extrap],
+                    fit_mean_dim_i[left_extrap],
+                    color=colors['fit_mean'],
+                    lw=1.5,
+                    linestyle='--',
+                    label='GP Extrap',
+                    zorder=3,
+                )
+            if np.any(right_extrap):
+                ax.plot(
+                    x_dense_denorm[right_extrap],
+                    fit_mean_dim_i[right_extrap],
+                    color=colors['fit_mean'],
+                    lw=1.5,
+                    linestyle='--',
+                    label='_nolegend_',
+                    zorder=3,
+                )
+            ax.fill_between(
+                x_dense_denorm,
+                ci_low,
+                ci_high,
+                color=colors['fit_ci'],
+                alpha=0.18,
+                label='95% CI',
+                zorder=2,
+            )
 
-        # c) 绘制MPC规划点的预测结果 (红色气泡)
-        pred_inputs_dim_i = future_velocities_np[:, i]
-        mean_pred_dim_i = mpc_plan_means[:, i]
-        std_pred_dim_i = np.sqrt(np.maximum(mpc_plan_vars[:, i], 1e-9))
-        
-        # 绘制更醒目的误差棒
-        # ax.errorbar(pred_inputs_dim_i, mean_pred_dim_i, yerr=1.96 * std_pred_dim_i,
-        #             fmt='none', ecolor=colors['predict_ci_bar'], elinewidth=5, # 加粗误差棒
-        #             capsize=0, zorder=11, alpha=0.8, label='_nolegend_') # 增加透明度, 且不在图例中显示
+        # Pred 的95%置信区间（逐点误差棒）
+        pred_ci_label = 'Pred 95% CI' if i == 0 else '_nolegend_'
+        ax.errorbar(
+            pred_inputs_dim_i,
+            mean_pred_dim_i,
+            yerr=1.96 * std_pred_dim_i,
+            fmt='none',
+            ecolor=colors['predict_ci_bar'],
+            elinewidth=1.1,
+            capsize=2,
+            alpha=0.8,
+            label=pred_ci_label,
+            zorder=4,
+        )
         # 绘制更醒目的红色气泡
         ax.scatter(pred_inputs_dim_i, mean_pred_dim_i, s=30, # 增大尺寸
                    facecolors=colors['predict_bubble_face'], alpha=0.8, # 增加不透明度
@@ -161,12 +219,19 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
         ax.yaxis.set_major_formatter(StrMethodFormatter('{x:1.1f}'))
 
     # 图例设置
-    fig.tight_layout() 
-    handles, labels = ax.get_legend_handles_labels()
+    fig.tight_layout()
+    handles, labels = [], []
+    for ax_i in axes[:, 0]:
+        h_i, l_i = ax_i.get_legend_handles_labels()
+        for h, l in zip(h_i, l_i):
+            if l == '_nolegend_' or l in labels:
+                continue
+            handles.append(h)
+            labels.append(l)
     fig.legend(handles, labels,
                loc='upper center',      # 定位在顶部中央
                bbox_to_anchor=(0.5, 0.92), # 精确控制位置
-               ncol=len(handles),       # 实现水平布局
+               ncol=max(1, min(len(handles), 6)),       # 实现水平布局
                frameon=True,
                handlelength=1.2,            # 图例线的长度（可调）
                columnspacing=1.2,           # 列间距
@@ -197,6 +262,8 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
         ax_x.grid(True)
     else:
         # a) 绘制训练数据点
+        train_x_denorm = np.array([], dtype=float)
+        train_y_denorm = np.array([], dtype=float)
         training_data_raw = gp.buffer.get_training_set()
         if training_data_raw:
             train_x_denorm = np.array([p[0] for p in training_data_raw])
@@ -206,13 +273,20 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
                        edgecolors=colors['train_bubble_edge'], linewidth=0.7,
                        label='Data', zorder=4)
 
-        # b) 绘制GP拟合曲线
-        if 'train_x_denorm' in locals() and train_x_denorm.size > 0 and gp._cached_norm_stats is not None:
+        pred_inputs_dim_i = future_velocities_np[:, i]
+        mean_pred_dim_i = mpc_plan_means[:, i]
+        std_pred_dim_i = np.sqrt(np.maximum(mpc_plan_vars[:, i], 1e-9))
+
+        # b) 绘制GP拟合曲线（覆盖训练区间+预测区间）
+        if train_x_denorm.size > 0 and gp._cached_norm_stats is not None:
             v_mean, v_std, r_mean, r_std = gp._cached_norm_stats
-            x_min_plot, x_max_plot = train_x_denorm.min(), train_x_denorm.max()
+            x_train_min, x_train_max = float(train_x_denorm.min()), float(train_x_denorm.max())
+            x_pred_min, x_pred_max = float(np.min(pred_inputs_dim_i)), float(np.max(pred_inputs_dim_i))
+            x_min_plot = min(x_train_min, x_pred_min)
+            x_max_plot = max(x_train_max, x_pred_max)
             range_ext = (x_max_plot - x_min_plot) * 0.15
             if abs(range_ext) < 1e-4: range_ext = 0.5
-            x_dense_denorm = np.linspace(x_min_plot - range_ext, x_max_plot + range_ext, 200)
+            x_dense_denorm = np.linspace(x_min_plot - range_ext, x_max_plot + range_ext, 260)
             
             # 使用缓存的批量统计量进行归一化
             x_dense_norm = (x_dense_denorm - v_mean) / v_std
@@ -227,14 +301,62 @@ def visualize_gp_snapshot(online_gp_manager, mpc_planned_states, snapshot_info_s
             # 反归一化
             fit_mean_dim_i = mean_norm * r_std + r_mean
             fit_std_dim_i = np.sqrt(np.maximum(var_norm * (r_std ** 2), 1e-9))
+            in_train = (x_dense_denorm >= x_train_min) & (x_dense_denorm <= x_train_max)
 
-            ax_x.plot(x_dense_denorm, fit_mean_dim_i, color=colors['fit_mean'], lw=1.0, label='GP Fit', zorder=3)
-            ax_x.fill_between(x_dense_denorm, fit_mean_dim_i - 1.96 * fit_std_dim_i, fit_mean_dim_i + 1.96 * fit_std_dim_i,
-                            color=colors['fit_ci'], alpha=0.2, label='95% CI', zorder=2)
+            if np.any(in_train):
+                ax_x.plot(
+                    x_dense_denorm[in_train],
+                    fit_mean_dim_i[in_train],
+                    color=colors['fit_mean'],
+                    lw=1.2,
+                    label='GP Fit',
+                    zorder=3,
+                )
+            left_extrap = x_dense_denorm < x_train_min
+            right_extrap = x_dense_denorm > x_train_max
+            if np.any(left_extrap):
+                ax_x.plot(
+                    x_dense_denorm[left_extrap],
+                    fit_mean_dim_i[left_extrap],
+                    color=colors['fit_mean'],
+                    lw=1.0,
+                    linestyle='--',
+                    label='GP Extrap',
+                    zorder=3,
+                )
+            if np.any(right_extrap):
+                ax_x.plot(
+                    x_dense_denorm[right_extrap],
+                    fit_mean_dim_i[right_extrap],
+                    color=colors['fit_mean'],
+                    lw=1.0,
+                    linestyle='--',
+                    label='_nolegend_',
+                    zorder=3,
+                )
+            ax_x.fill_between(
+                x_dense_denorm,
+                fit_mean_dim_i - 1.96 * fit_std_dim_i,
+                fit_mean_dim_i + 1.96 * fit_std_dim_i,
+                color=colors['fit_ci'],
+                alpha=0.2,
+                label='95% CI',
+                zorder=2,
+            )
 
-        # c) 绘制MPC规划点的预测结果
-        pred_inputs_dim_i = future_velocities_np[:, i]
-        mean_pred_dim_i = mpc_plan_means[:, i]
+        # c) 绘制MPC规划点的预测结果（带95%CI）
+        ax_x.errorbar(
+            pred_inputs_dim_i,
+            mean_pred_dim_i,
+            yerr=1.96 * std_pred_dim_i,
+            fmt='none',
+            ecolor=colors['predict_ci_bar'],
+            elinewidth=1.1,
+            capsize=2,
+            alpha=0.85,
+            label='Pred 95% CI',
+            zorder=4,
+        )
         ax_x.scatter(pred_inputs_dim_i, mean_pred_dim_i, s=40,
                    facecolors=colors['predict_bubble_face'], alpha=0.9,
                    edgecolors=colors['predict_bubble_edge'], linewidth=1.2,

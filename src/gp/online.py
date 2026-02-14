@@ -28,6 +28,10 @@ import traceback # 用于打印详细的错误信息
 import atexit
 import signal
 import sys
+try:
+    from linear_operator.utils.errors import NotPSDError
+except Exception:  # pragma: no cover
+    NotPSDError = RuntimeError
 
 # =================================================================================
 # 1. 模型与数据缓冲区定义
@@ -75,7 +79,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
 
 
 
-from src.gp.buffer import InformationGainBuffer, FIFOBuffer, MultiLevelInformationGainBuffer
+from src.gp.buffer import FIFOBuffer, MultiLevelInformationGainBuffer
 
 
 # =================================================================================
@@ -160,8 +164,9 @@ def gp_training_worker(
             start_time = time.time()
             for i in range(worker_config.get('n_iter', 100)):
                 optimizer.zero_grad()
-                output = model(train_x_tensor)
-                loss = -mll(output, train_y_tensor)
+                with gpytorch.settings.cholesky_jitter(1e-3):
+                    output = model(train_x_tensor)
+                    loss = -mll(output, train_y_tensor)
                 loss.backward()
                 optimizer.step()
                 history.record(loss.item(), model, optimizer)
@@ -206,20 +211,27 @@ class IncrementalGP:
         # 数据缓冲区 - 根据config选择缓冲区类型
         max_size = config.get('buffer_max_size', 30)
         buffer_type = config.get('buffer_type', 'ivs')
-        use_multilevel_ivs = bool(config.get('ivs_multilevel', True))
         
         if buffer_type == 'fifo':
             # 简单的FIFO缓冲区（用于消融实验对比）
             self.buffer = FIFOBuffer(max_size)
-        elif buffer_type in ('ivs', 'ivs_multilevel') and use_multilevel_ivs:
-            # 多级 IVS: 近期层 + 中期层 + 长期层，提升速度域覆盖率
+        else:
+            if buffer_type not in ('ivs', 'ivs_multilevel'):
+                print(f"[IncrementalGP] Unknown buffer_type='{buffer_type}', fallback to multi-level IVS.")
+            # IVS path: always use multi-level IVS (single-level branch removed)
             novelty_weight = float(config.get('novelty_weight', 0.2))
             recency_weight = float(config.get('recency_weight', max(0.0, 1.0 - novelty_weight)))
             recency_decay_rate = float(config.get('recency_decay_rate', 0.1))
             min_distance = float(config.get('buffer_min_distance', 0.01))
             level_capacities = config.get('buffer_level_capacities', None)
             level_sparsity = config.get('buffer_level_sparsity', None)
-            merge_min_distance = float(config.get('buffer_merge_min_distance', min_distance))
+            cluster_anchor_window = int(config.get('cluster_anchor_window', 6))
+            cluster_gap_factor = float(config.get('cluster_gap_factor', 2.5))
+            out_cluster_penalty = float(config.get('out_cluster_penalty', 0.35))
+            target_size_slack = int(config.get('target_size_slack', 1))
+            local_dup_cap = int(config.get('buffer_local_dup_cap', 4))
+            close_update_v_ratio = float(config.get('buffer_close_update_v_ratio', 0.35))
+            close_update_y_threshold = float(config.get('buffer_close_update_y_threshold', 0.03))
             self.buffer = MultiLevelInformationGainBuffer(
                 max_size=max_size,
                 novelty_weight=novelty_weight,
@@ -228,20 +240,13 @@ class IncrementalGP:
                 min_distance=min_distance,
                 level_capacities=level_capacities,
                 level_sparsity=level_sparsity,
-                merge_min_distance=merge_min_distance,
-            )
-        else:
-            # 默认：基于信息增益评分的智能缓冲区 (IVS)
-            novelty_weight = float(config.get('novelty_weight', 0.2))
-            recency_weight = float(config.get('recency_weight', max(0.0, 1.0 - novelty_weight)))
-            recency_decay_rate = float(config.get('recency_decay_rate', 0.1))
-            min_distance = float(config.get('buffer_min_distance', 0.01))
-            self.buffer = InformationGainBuffer(
-                max_size=max_size,
-                novelty_weight=novelty_weight,
-                recency_weight=recency_weight,
-                decay_rate=recency_decay_rate,
-                min_distance=min_distance
+                cluster_anchor_window=cluster_anchor_window,
+                cluster_gap_factor=cluster_gap_factor,
+                out_cluster_penalty=out_cluster_penalty,
+                target_size_slack=target_size_slack,
+                local_dup_cap=local_dup_cap,
+                close_update_v_ratio=close_update_v_ratio,
+                close_update_y_threshold=close_update_y_threshold,
             )
 
         # 批量归一化统计量（每次从缓冲区计算，避免EMA漂移）
@@ -486,8 +491,9 @@ class IncrementalGPManager:
         start_time = time.time()
         for _ in range(n_iter):
             optimizer.zero_grad()
-            output = gp.model(train_x)
-            loss = -mll(output, train_y)
+            with gpytorch.settings.cholesky_jitter(1e-3):
+                output = gp.model(train_x)
+                loss = -mll(output, train_y)
             loss.backward()
             optimizer.step()
             history.record(loss.item(), gp.model, optimizer)
@@ -659,11 +665,17 @@ class IncrementalGPManager:
             
             gp.model.eval()
             gp.likelihood.eval()
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                preds = gp.likelihood(gp.model(v_query_torch))
-                mean_norm = preds.mean.cpu().numpy()
-                var_norm = preds.variance.cpu().numpy()
-            
+            try:
+                with torch.no_grad(), gpytorch.settings.fast_pred_var(), gpytorch.settings.cholesky_jitter(1e-3):
+                    preds = gp.likelihood(gp.model(v_query_torch))
+                    mean_norm = preds.mean.cpu().numpy()
+                    var_norm = preds.variance.cpu().numpy()
+            except (RuntimeError, NotPSDError) as e:
+                # 数值异常时安全降级：当前维度本步不注入在线GP修正，等待后续重训练恢复。
+                print(f"[GPManager] Predict failed on dim {i}, skip this step: {e}")
+                gp.is_trained_once = False
+                continue
+
             # 反归一化
             means[:, i] = mean_norm * r_std + r_mean
             variances[:, i] = var_norm * (r_std ** 2)
